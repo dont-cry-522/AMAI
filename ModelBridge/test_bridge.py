@@ -5,13 +5,14 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from bridge import Bridge, read_snapshot, team_view, validate_response, request_model, render_command
 
 
 def fixture(path, chat_seq=1, tick=1, session=123456, manual=(-1,-1)):
-    lines=[f'H|{session}|{tick}|{chat_seq}|0',f'C|{chat_seq}|跟着我，等信号一起打不死族',
+    lines=[f'H|{session}|{tick}|{chat_seq}|0','V|4','I|0',f'C|{chat_seq}|跟着我，等信号一起打不死族',
            f'Q|{manual[0]}|{manual[1]}','P|0|0|3|1|0','P|1|1|3|2|0','P|2|1|12|3|0','P|3|1|12|4|0']
     for viewer in (1,2,3):
         mask=3 if viewer==1 else 12
@@ -43,7 +44,18 @@ def run():
         autonomous_attack=answer(waiting,action='attack',target=2)
         assert validate_response(autonomous_attack,waiting)['orders'][0]['action']=='follow'
         released=team_view({**state,'chat_seq':2},3,waiting['memory'])
+        assert validate_response(autonomous_attack,released)['orders'][0]['action']=='follow'
+        autonomous_attack['release_waiting']=True
         assert validate_response(autonomous_attack,released)['orders'][0]['action']=='attack'
+        discussion={**autonomous_attack,'intent':'chat'}
+        assert validate_response(discussion,released)['orders'][0]['action']=='follow'
+        assert validate_response(discussion,released)['plan']['waiting']
+        hero=answer(ally,'hero_attack',2)
+        assert validate_response(hero,ally)['orders'][0]['action']=='hero_attack'
+        old_map={**ally,'capabilities':{'heroes_only':False}}
+        try: validate_response(hero,old_map)
+        except ValueError: pass
+        else: raise AssertionError('Hero action sent to an old map')
         for mutation in [dict(player=2,action='retreat',target=-1,say=''),
                          dict(player=1,action='follow',target=2,say=''),
                          dict(player=1,action='attack',target=0,say=''),
@@ -78,7 +90,7 @@ def run():
             result=request_model(dict(endpoint=f'http://127.0.0.1:{server.server_port}/chat/completions',model='test'),ally,'test-session')
         finally:
             server.shutdown();server.server_close();thread.join()
-        assert result['orders'][0]['action']=='follow' and captured['ua']=='War3-AMAI-Bridge/0.3'
+        assert result['orders'][0]['action']=='follow' and captured['ua']=='War3-AMAI-Bridge/0.4'
         assert captured['body']['model']=='test'
         assert '必须使用简体中文' in captured['body']['messages'][0]['content']
         # Structured data must stay inside fixed string arguments, including hostile text.
@@ -95,6 +107,44 @@ def run():
         bridge.step(state,110)
         assert (folder/'command1.txt').read_bytes()==before  # stale game state is not refreshed
         bridge.pool.shutdown(wait=True)
+        # New instructions bypass an obsolete running call, without a request queue.
+        bridge=Bridge(folder,{},mock=True); bridge.reset(state)
+        slow=concurrent.futures.Future(); slow.set_running_or_notify_cancel()
+        bridge.pending[3]=(slow,state['session'],ally,120)
+        newer=fixture(folder/'state.txt',chat_seq=2,tick=2)
+        bridge.step(newer,121)
+        assert bridge.pending[3][2]['instruction']['sequence']==2
+        assert slow in bridge.retired
+        bridge.step(newer,121.5)
+        # A direct answer is not swallowed by the autonomous 30-second cooldown.
+        direct=answer(team_view(newer,3,{}))
+        direct_future=concurrent.futures.Future(); direct_future.set_result(direct)
+        newest=fixture(folder/'state.txt',chat_seq=3,tick=3)
+        bridge.last_say[1]=122
+        bridge.pending[3]=(direct_future,state['session'],team_view(newest,3,{}),122)
+        bridge.step(newest,123)
+        assert bridge.orders[1]['say']=='准备跟上。'
+        slow.set_result(good)
+        bridge.pool.shutdown(wait=True)
+        # Saturated model service: two obsolete requests plus the enemy request
+        # occupy all three slots; keep only the latest unsubmitted human message.
+        bridge=Bridge(folder,{})
+        bridge.pool.shutdown(wait=True)
+        submitted=[]
+        def submit(*args):
+            future=concurrent.futures.Future();future.set_running_or_notify_cancel()
+            submitted.append(future)
+            return future
+        bridge.pool=SimpleNamespace(submit=submit)
+        bridge.step(state,130)
+        assert len(submitted)==2
+        for seq in range(2,8):
+            changing=fixture(folder/'state.txt',chat_seq=seq,tick=seq)
+            bridge.step(changing,130+seq/10)
+        assert len(submitted)==3 and 3 not in bridge.pending
+        submitted[0].set_result(good)
+        bridge.step(changing,131)
+        assert len(submitted)==4 and bridge.pending[3][2]['instruction']['sequence']==7
         # A local wait/retreat must beat a delayed model attack, survive casual chat
         # and a bridge restart, leave enemies active, and release only explicitly.
         bridge=Bridge(folder,{},mock=True)
@@ -140,7 +190,9 @@ if __name__=='__main__':
         script=(args.compiled/'Blizzard.j').read_text(encoding='utf-8')
         # The compiler can parse double-encoded strings without reporting an error.
         for text in ('string language = "Chinese"','[R] 撤回各自基地',
-                     '跟随目标英雄','mb_chat == "撤退"','call Preload("Q|"'):
+                     '跟随目标英雄','mb_chat == "撤退"','call Preload("Q|"',
+                     'call Preload("V|4")','call MBReadVoice()','仅英雄跟随'):
             assert text in script, 'Compiled TFT text missing or incorrectly encoded: '+text
         assert b'string language = "Chinese"' in (args.compiled/'common.ai').read_bytes()
+        assert b'function MBAIHeroStep' in (args.compiled/'common.ai').read_bytes()
         print('PASS: compiled Chinese menu, emergency commands and local control state')

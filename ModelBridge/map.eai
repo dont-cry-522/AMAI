@@ -49,6 +49,12 @@ function MBActionName takes integer action returns string
         return "集中进攻"
     elseif action == 4 then
         return "撤回各自基地"
+    elseif action == 5 then
+        return "仅英雄袭击目标出生基地"
+    elseif action == 7 then
+        return "仅英雄跟随"
+    elseif action == 8 then
+        return "仅英雄等待"
     endif
     return "自主行动"
 endfunction
@@ -179,16 +185,48 @@ function MBQuickResponse takes nothing returns nothing
     set clicked = null
 endfunction
 
-function MBChat takes nothing returns nothing
-    if GetTriggerPlayer() == Player(mb_host) and SubString(GetEventPlayerChatString(),0,1) != "-" then
-        call MBRecordChat(GetEventPlayerChatString())
+function MBUserInput takes string text returns nothing
+    if SubString(text,0,1) != "-" then
+        call MBRecordChat(text)
         // Exact emergency commands work even while a model request is in flight.
         if mb_chat == "撤退" or mb_chat == "快撤" or mb_chat == "撤" then
             call MBQuickOrder(4,-1)
+        elseif mb_chat == "恢复指挥" or mb_chat == "恢复模型指挥" then
+            call MBQuickOrder(-1,-1)
         elseif mb_manual_action >= 0 then
-            call DisplayTimedTextToPlayer(Player(mb_host),0,0,5,"当前为手动指挥。要用聊天指挥模型，请先按 Esc → C。")
+            call DisplayTimedTextToPlayer(Player(mb_host),0,0,5,"当前为手动指挥。说“恢复指挥”或按 Esc → C 后再用模型指挥。")
         endif
     endif
+endfunction
+
+function MBChat takes nothing returns nothing
+    if GetTriggerPlayer() == Player(mb_host) then
+        call MBUserInput(GetEventPlayerChatString())
+    endif
+endfunction
+
+function MBReadVoice takes nothing returns nothing
+    local string name12 = GetPlayerName(Player(12))
+    local string name13 = GetPlayerName(Player(13))
+    local string data
+    local string text
+    local integer stamp
+    local integer seq
+    call SetPlayerName(Player(12), "")
+    call SetPlayerName(Player(13), "")
+    call Preloader("AMAI_Bridge\\voice.txt")
+    set data = GetPlayerName(Player(12))
+    set text = GetPlayerName(Player(13))
+    call SetPlayerName(Player(12), name12)
+    call SetPlayerName(Player(13), name13)
+    set stamp = S2I(MBField(data,1))
+    set seq = S2I(MBField(data,2))
+    if MBField(data,0) != I2S(mb_session) or stamp > mb_tick or mb_tick-stamp > 3 or seq <= mb_voice_seq or text == "" then
+        return
+    endif
+    set mb_voice_seq = seq
+    call DisplayTimedTextToPlayer(Player(mb_host),0,0,8,"[你说] "+MBSafe(text))
+    call MBUserInput(text)
 endfunction
 
 function MBDeath takes nothing returns nothing
@@ -290,13 +328,13 @@ function MBReadOrder takes integer p returns nothing
     if IsPlayerAlly(Player(p),Player(mb_host)) and S2I(MBField(data,2)) != mb_chat_seq then
         return
     endif
-    if action < 0 or action > 4 then
+    if action < 0 or action > 8 or action == 6 then
         return
     endif
-    if action == 1 and (target < 0 or target >= 12 or not IsPlayerAlly(Player(p),Player(target))) then
+    if (action == 1 or action == 7) and (target < 0 or target >= 12 or target == p or not IsPlayerAlly(Player(p),Player(target))) then
         return
     endif
-    if action == 3 and (target < 0 or target >= 12 or not IsPlayerEnemy(Player(target),Player(p)) or GetPlayerSlotState(Player(target)) != PLAYER_SLOT_STATE_PLAYING) then
+    if (action == 3 or action == 5) and (target < 0 or target >= 12 or not IsPlayerEnemy(Player(target),Player(p)) or GetPlayerSlotState(Player(target)) != PLAYER_SLOT_STATE_PLAYING) then
         return
     endif
     if mb_tick-mb_last_valid[p] > 5 then
@@ -312,9 +350,9 @@ function MBReadOrder takes integer p returns nothing
         call CommandAI(Player(p),90+action,target)
         set mb_last_action[p] = action
         set mb_last_target[p] = target
-    endif
-    if IsPlayerAlly(Player(p),Player(mb_host)) then
-        call DisplayTimedTextToPlayer(Player(mb_host),0,0,5,"[模型指挥] 已向 "+GetPlayerName(Player(p))+" 下达："+MBActionName(action)+"。")
+        if IsPlayerAlly(Player(p),Player(mb_host)) then
+            call DisplayTimedTextToPlayer(Player(mb_host),0,0,5,"[模型指挥] 已向 "+GetPlayerName(Player(p))+" 下达："+MBActionName(action)+"。")
+        endif
     endif
     if say != "" then
         call DisplayTimedTextToPlayer(Player(mb_host),0,0,8,c2s(Player(p))+say)
@@ -327,6 +365,7 @@ function MBTick takes nothing returns nothing
     local integer mask = 0
     local integer bit = 1
     set mb_tick = mb_tick + 1
+    call MBReadVoice()
     loop
         exitwhen i >= 12
         if GetPlayerSlotState(Player(i)) == PLAYER_SLOT_STATE_PLAYING and GetPlayerController(Player(i)) == MAP_CONTROL_COMPUTER then
@@ -341,6 +380,8 @@ function MBTick takes nothing returns nothing
     call PreloadGenClear()
     call PreloadGenStart()
     call Preload("H|"+I2S(mb_session)+"|"+I2S(mb_tick)+"|"+I2S(mb_chat_seq)+"|"+I2S(mb_host))
+    call Preload("V|4")
+    call Preload("I|"+I2S(mb_voice_seq))
     call Preload("Q|"+I2S(mb_manual_action)+"|"+I2S(mb_manual_target))
     set i = 0
     loop
@@ -418,6 +459,7 @@ function MBInit takes nothing returns nothing
     set mb_timer = CreateTimer()
     call TimerStart(mb_timer,2.0,true,function MBTick)
     call DisplayTimedTextToPlayer(Player(mb_host),0,0,20,"AMAI 中文模型实验版：请选择带指挥功能的模式；Esc 打开快捷指挥。模型模式另需启动电脑上的连接程序。")
+    call DisplayTimedTextToPlayer(Player(mb_host),0,0,20,"语音版：按住 F7 说话，松开提交；中文回复显示在屏幕上。说“撤退”直接撤回，说“恢复指挥”解除手动锁定。")
     set chat = null
     set death = null
     set quick = null

@@ -3,6 +3,7 @@
     integer mb_session = 0
     integer mb_tick = 0
     integer mb_chat_seq = 0
+    integer mb_voice_seq = 0
     string mb_chat = ""
     string array mb_chat_history
     integer array mb_chat_numbers

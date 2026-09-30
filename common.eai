@@ -14,6 +14,9 @@ globals
     real mbai_deadline = 0
     real mbai_x = 0
     real mbai_y = 0
+    group mbai_heroes = null
+    real mbai_hero_x = 0
+    real mbai_hero_y = 0
 
    //============================================================================
    // Standard Constants and Variables
@@ -8858,6 +8861,13 @@ function cmd_misc takes integer cmd, integer data returns nothing
 endfunction
 
 //============================================================================
+function MBAIReleaseHeroes takes nothing returns nothing
+  if mbai_heroes != null then
+    call GroupRecycleHarrassPositionInstant(mbai_heroes)
+    set mbai_heroes = null
+  endif
+endfunction
+
 function cmd_loop takes nothing returns nothing
   local integer cmd = 0
   local integer data = 0
@@ -8876,9 +8886,10 @@ function cmd_loop takes nothing returns nothing
     call PopLastCommand()
     call Trace("Receiving command" )
 
-    if cmd >= 90 and cmd <= 96 then
+    if cmd >= 90 and cmd <= 98 then
       set mbai_deadline = TimerGetElapsed(tq_timer) + 30
       if cmd != 96 then
+        call MBAIReleaseHeroes()
         call cmd_cancel(2,0)
         set attack_unit = false
         set target_unit = null
@@ -8897,6 +8908,16 @@ function cmd_loop takes nothing returns nothing
           call cmd_attack(12,data)
         elseif cmd == 94 then
           call cmd_attack(10,0)
+        elseif cmd == 95 or cmd == 97 or cmd == 98 then
+          // Keep the regular army at home while a detached hero party acts.
+          call CaptainGoHome()
+          set mbai_hero_x = mbai_x
+          set mbai_hero_y = mbai_y
+          if cmd == 95 then
+            // Scout the assigned starting site, not unseen expansion locations.
+            set mbai_x = GetStartLocationX(GetPlayerStartLocation(Player(data)))
+            set mbai_y = GetStartLocationY(GetPlayerStartLocation(Player(data)))
+          endif
         endif
       endif
     elseif cmd < 10 then
@@ -13962,6 +13983,59 @@ endfunction
 //============================================================================
 // AMAI SingleMeleeAttack
 //============================================================================
+function MBAIHeroStep takes nothing returns nothing
+  local integer i = 1
+  local integer order = 0
+  local unit u = null
+  local boolean fresh = false
+  local boolean moved = false
+  if mbai_heroes == null then
+    set mbai_heroes = CreateGroup()
+  endif
+  set moved = (mbai_x-mbai_hero_x)*(mbai_x-mbai_hero_x)+(mbai_y-mbai_hero_y)*(mbai_y-mbai_hero_y) > 62500
+  loop
+    exitwhen i > 3
+    set u = hero_unit[i]
+    if u != null and GetOwningPlayer(u) == ai_player then
+      if UnitAlive(u) and not IsUnitHidden(u) and GetWidgetLife(u) > GetUnitState(u,UNIT_STATE_MAX_LIFE)*0.35 and not IsUnitInGroup(u,unit_healing) and not IsUnitInGroup(u,unit_rescueing) and not IsUnitBuying(u) then
+        set fresh = false
+        if not IsUnitInGroup(u,mbai_heroes) and IsStandardUnit(u) then
+          call GroupAddUnit(mbai_heroes,u)
+          call GroupAddUnit(unit_harassing,u)
+          call RemoveGuardPosition(u)
+          set fresh = true
+        endif
+        if IsUnitInGroup(u,mbai_heroes) then
+          set order = GetUnitCurrentOrder(u)
+          // Do not interrupt spells/items or repeatedly restart an attack swing.
+          if order == 0 or order == OrderId("stop") or ((fresh or moved) and (order == OrderId("move") or order == OrderId("attack") or order == OrderId("holdposition"))) then
+            if mbai_mode == 8 then
+              call IssueImmediateOrder(u,"holdposition")
+            elseif mbai_mode == 7 then
+              if (GetUnitX(u)-mbai_x)*(GetUnitX(u)-mbai_x)+(GetUnitY(u)-mbai_y)*(GetUnitY(u)-mbai_y) > 62500 then
+                call IssuePointOrder(u,"move",mbai_x,mbai_y)
+              endif
+            else
+              call IssuePointOrder(u,"attack",mbai_x,mbai_y)
+            endif
+          endif
+        endif
+      elseif IsUnitInGroup(u,mbai_heroes) then
+        call GroupRemoveUnit(mbai_heroes,u)
+        call GroupRemoveUnit(unit_harassing,u)
+        call RecycleGuardPosition(u)
+        if UnitAlive(u) and not IsUnitInGroup(u,unit_healing) and not IsUnitInGroup(u,unit_rescueing) and not IsUnitBuying(u) then
+          call IssuePointOrder(u,"move",GetLocationX(home_location),GetLocationY(home_location))
+        endif
+      endif
+    endif
+    set i = i + 1
+  endloop
+  set mbai_hero_x = mbai_x
+  set mbai_hero_y = mbai_y
+  set u = null
+endfunction
+
 function MBAIStep takes nothing returns boolean
   local group g = null
   local unit u = null
@@ -13969,15 +14043,17 @@ function MBAIStep takes nothing returns boolean
     return false
   endif
   if TimerGetElapsed(tq_timer) > mbai_deadline then
+    call MBAIReleaseHeroes()
     set mbai_mode = 0
     call cmd_cancel(2,0)
     set go_home = false
     return false
   endif
   if mbai_mode == 3 or town_threatened then
+    call MBAIReleaseHeroes()
     return false
   endif
-  if mbai_mode == 1 then
+  if mbai_mode == 1 or mbai_mode == 7 then
     set g = CreateGroup()
     call GroupEnumUnitsOfPlayer(g,Player(mbai_target),null)
     loop
@@ -13996,6 +14072,13 @@ function MBAIStep takes nothing returns boolean
     set mbai_y = GetLocationY(home_location)
   endif
   set break_attack = false
+  if mbai_mode == 5 or mbai_mode == 7 or mbai_mode == 8 then
+    call MBAIHeroStep()
+    call Sleep(1)
+    set g = null
+    set u = null
+    return true
+  endif
   call FormGroupAM(0)
   call CaptainAttack(mbai_x,mbai_y)
   call Sleep(2)

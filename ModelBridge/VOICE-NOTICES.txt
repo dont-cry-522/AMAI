@@ -1,0 +1,25 @@
+Offline voice components in the personal portable bundle
+
+Vosk API 0.3.45: https://github.com/alphacep/vosk-api
+Chinese model vosk-model-small-cn-0.22: https://alphacephei.com/vosk/models
+Model archive: https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip
+Archive SHA-256: 3af8b0e7e0f835ae9d414ce5df580237a3cfb08d586c9fbbb0f7ff29ad5b14ba
+Vosk API and model license: Apache-2.0, see VOSK-LICENSE.txt.
+Original model README remains in voice-model/README.
+
+sounddevice 0.5.5 / PortAudio: https://python-sounddevice.readthedocs.io/
+Audio input uses Windows' default microphone, 16 kHz mono PCM.
+Licenses and package metadata are retained under runtime/site-packages,
+including .dist-info/licenses and the bundled PortAudio license.
+requirements-voice.txt lists direct Python dependencies. The complete installed
+versions are recorded in the portable package's build-info.json.
+
+The voice model and runtime are binary delivery assets, excluded from Git.
+For a source-only installation, install requirements-voice.txt into the selected
+Python environment, extract this model into ModelBridge/voice-model, and set
+voice_enabled=true in the private local configuration. The personal portable
+bundle already contains these assets and settings; its user need not install them.
+
+No raw audio is written to disk or uploaded. Only recognized text enters the
+existing configured model service, together with the team's game observations.
+Offline synthetic-speech checks do not establish real-microphone accuracy.
