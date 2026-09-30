@@ -161,6 +161,20 @@ def ability_objects():
     return records
 
 
+def inject_script(script):
+    hero = Path(__file__).with_name('forsaken.j').read_text(encoding='utf-8')
+    match = re.fullmatch(r'.*?globals\n(.*?)endglobals\n(.*)', hero, re.S)
+    assert match
+    script = script.replace('\r\r\n', '\n').replace('\r\n', '\n')
+    assert not re.search(r'\bFP_\w+', script), 'Hero port already present or namespace collision'
+    assert script.count('endglobals') == 1
+    assert script.count('function main takes nothing returns nothing') == 1
+    script = script.replace('endglobals', match[1]+'endglobals\n'+match[2], 1)
+    begin = script.index('function main takes nothing returns nothing')
+    end = script.index('endfunction', begin)
+    return script[:end]+'    call TimerStart(CreateTimer(), 0.0, false, function FP_Init)\n'+script[end:]
+
+
 def build(args):
     sys.path.insert(0, str(args.mpyq))
     import mpyq
@@ -176,15 +190,7 @@ def build(args):
     stage = output.parent/(output.stem+'-imports')
     stage.mkdir(parents=True, exist_ok=False)
     editor = str(args.editor.resolve())
-    hero = Path(__file__).with_name('forsaken.j').read_text(encoding='utf-8')
-    match = re.fullmatch(r'.*?globals\n(.*?)endglobals\n(.*)', hero, re.S)
-    assert match
-    script = archive.read_file('war3map.j').decode('utf-8').replace('\r\r\n','\n').replace('\r\n','\n')
-    script = script.replace('endglobals', match[1]+'endglobals\n'+match[2], 1)
-    # Defer until map setup and original melee initialization are complete.
-    begin = script.index('function main takes nothing returns nothing')
-    end = script.index('endfunction', begin)
-    script = script[:end]+'    call TimerStart(CreateTimer(), 0.0, false, function FP_Init)\n'+script[end:]
+    script = inject_script(archive.read_file('war3map.j').decode('utf-8-sig'))
     (stage/'war3map.j').write_text(script, encoding='utf-8')
     # Original maps can use PKWARE/Huffman compression unsupported by mpyq.
     base_read = stage.parent/(output.stem+'-original-strings')
