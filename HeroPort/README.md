@@ -23,6 +23,11 @@ Blizzard assets, private configuration and generated maps are not committed here
   read-only. Work/extracted files stay outside the delivery directory.
 - `python -m unittest discover -s HeroPort -p test_add_to_maps.py` checks object
   preservation, collision rejection and script initialization order.
+- `hero_charm_maps.py` builds a separate map set where the base Dark Ranger Charm
+  allows heroes alongside ordinary units. Every other extracted map file is
+  compared byte-for-byte. The change applies to human and computer Dark Rangers
+  in those maps. Actual hero targeting, AI responses and ownership behavior
+  need 1.24e gameplay testing; no executable or DLL is modified.
 
 ## Compatibility limits — not an exact official implementation
 
