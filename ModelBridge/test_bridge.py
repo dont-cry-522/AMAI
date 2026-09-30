@@ -1,5 +1,6 @@
 """Run: python ModelBridge/test_bridge.py (no key, game, or paid API needed)."""
 import concurrent.futures
+import argparse
 import json
 from pathlib import Path
 import tempfile
@@ -9,9 +10,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from bridge import Bridge, read_snapshot, team_view, validate_response, request_model, render_command
 
 
-def fixture(path, chat_seq=1, tick=1, session=123456):
+def fixture(path, chat_seq=1, tick=1, session=123456, manual=(-1,-1)):
     lines=[f'H|{session}|{tick}|{chat_seq}|0',f'C|{chat_seq}|跟着我，等信号一起打不死族',
-           'P|0|0|3|1|0','P|1|1|3|2|0','P|2|1|12|3|0','P|3|1|12|4|0']
+           f'Q|{manual[0]}|{manual[1]}','P|0|0|3|1|0','P|1|1|3|2|0','P|2|1|12|3|0','P|3|1|12|4|0']
     for viewer in (1,2,3):
         mask=3 if viewer==1 else 12
         for owner in range(4):
@@ -77,8 +78,9 @@ def run():
             result=request_model(dict(endpoint=f'http://127.0.0.1:{server.server_port}/chat/completions',model='test'),ally,'test-session')
         finally:
             server.shutdown();server.server_close();thread.join()
-        assert result['orders'][0]['action']=='follow' and captured['ua']=='War3-AMAI-Bridge/0.1'
+        assert result['orders'][0]['action']=='follow' and captured['ua']=='War3-AMAI-Bridge/0.2'
         assert captured['body']['model']=='test'
+        assert '必须使用简体中文' in captured['body']['messages'][0]['content']
         # Structured data must stay inside fixed string arguments, including hostile text.
         hostile='\");\ncall ExecuteFunc(\"bad\")\n//\\|cffff0000'
         script=render_command(state,good['orders'][0],5,hostile)
@@ -93,12 +95,52 @@ def run():
         bridge.step(state,110)
         assert (folder/'command1.txt').read_bytes()==before  # stale game state is not refreshed
         bridge.pool.shutdown(wait=True)
+        # A local wait/retreat must beat a delayed model attack, survive casual chat
+        # and a bridge restart, leave enemies active, and release only explicitly.
+        bridge=Bridge(folder,{},mock=True)
+        bridge.step(state,200); bridge.step(state,200.5)
+        before=(folder/'command1.txt').read_bytes()
+        f=concurrent.futures.Future(); f.set_running_or_notify_cancel()
+        bridge.pending[3]=(f,state['session'],ally,200.5)
+        locked=fixture(folder/'state.txt',chat_seq=2,tick=2,manual=(2,-1))
+        assert locked['manual_order']=={'action':2,'target':-1}
+        assert 'manual_order' not in team_view(locked,12,{})
+        bridge.step(locked,201)
+        assert 3 not in bridge.pending and 3 not in bridge.memory and 1 not in bridge.orders
+        f.set_result(answer(ally,action='attack',target=2))
+        casual=fixture(folder/'state.txt',chat_seq=3,tick=12,manual=(2,-1))
+        casual['chat']='好'; casual['chat_history'][-1]['text']='好'
+        bridge.step(casual,203); bridge.step(casual,203.5)
+        assert (folder/'command1.txt').read_bytes()==before
+        assert 3 not in bridge.pending and 1 not in bridge.orders and 2 in bridge.orders
+        bridge.pool.shutdown(wait=True)
+        restarted=Bridge(folder,{},mock=True)
+        restarted.step(casual,204); restarted.step(casual,204.5)
+        assert 1 not in restarted.orders and 2 in restarted.orders
+        released=fixture(folder/'state.txt',chat_seq=4,tick=13)
+        released['chat']='[快捷指挥] 取消之前的安排，恢复自主行动'
+        restarted.step(released,206); restarted.step(released,206.5)
+        assert restarted.orders[1]['order']['action']=='auto'
+        assert 'Player(12), "123456|13|4|' in (folder/'command1.txt').read_text(encoding='utf-8')
+        restarted.pool.shutdown(wait=True)
         # Truncated writes cannot become valid observations.
         (folder/'state.txt').write_text('call Preload( "H|1|2|3|0" )',encoding='utf-8')
         try: read_snapshot(folder/'state.txt')
         except ValueError: pass
         else: raise AssertionError('Partial snapshot accepted')
-    print('PASS: team isolation, command validation, stale response rejection, HTTP integration, string escaping, sequence recovery, stale snapshots and partial writes')
+    print('PASS: team isolation, command validation, manual priority/release/restart, Chinese prompt, stale response rejection, HTTP integration, string escaping, sequence recovery, stale snapshots and partial writes')
 
 
-if __name__=='__main__': run()
+if __name__=='__main__':
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--compiled',type=Path,help='Optional generated TFT scripts directory for build verification')
+    args=parser.parse_args()
+    run()
+    if args.compiled:
+        script=(args.compiled/'Blizzard.j').read_text(encoding='utf-8')
+        # The compiler can parse double-encoded strings without reporting an error.
+        for text in ('string language = "Chinese"','[R] 撤回各自基地',
+                     '跟随目标英雄','mb_chat == "撤退"','call Preload("Q|"'):
+            assert text in script, 'Compiled TFT text missing or incorrectly encoded: '+text
+        assert b'string language = "Chinese"' in (args.compiled/'common.ai').read_bytes()
+        print('PASS: compiled Chinese menu, emergency commands and local control state')

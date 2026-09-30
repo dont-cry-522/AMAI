@@ -33,24 +33,160 @@ function MBSafe takes string s returns string
     return result
 endfunction
 
-function MBChat takes nothing returns nothing
+function MBRecordChat takes string text returns nothing
+    set mb_chat_seq = mb_chat_seq + 1
+    set mb_chat = MBSafe(text)
+    set mb_chat_history[ModuloInteger(mb_chat_seq,16)] = mb_chat
+    set mb_chat_numbers[ModuloInteger(mb_chat_seq,16)] = mb_chat_seq
+endfunction
+
+function MBActionName takes integer action returns string
+    if action == 1 then
+        return "跟随目标英雄"
+    elseif action == 2 then
+        return "原地等待"
+    elseif action == 3 then
+        return "集中进攻"
+    elseif action == 4 then
+        return "撤回各自基地"
+    endif
+    return "自主行动"
+endfunction
+
+// Local orders remain authoritative until another quick order or explicit release.
+function MBQuickOrder takes integer action, integer target returns nothing
     local integer i = 0
+    local string text = MBActionName(action)
+    set mb_manual_action = action
+    set mb_manual_target = target
+    if action == 1 then
+        set text = "跟随我的英雄"
+    elseif action == 3 then
+        set text = text + "：" + GetPlayerName(Player(target))
+    elseif action == 0 then
+        set text = "改由原版指挥菜单控制"
+    elseif action == -1 then
+        set text = "取消之前的安排，恢复自主行动"
+    endif
+    call MBRecordChat("[快捷指挥] " + text)
+    loop
+        exitwhen i >= 12
+        if GetPlayerSlotState(Player(i)) == PLAYER_SLOT_STATE_PLAYING and GetPlayerController(Player(i)) == MAP_CONTROL_COMPUTER and IsPlayerAlly(Player(i),Player(mb_host)) then
+            call CommandAI(Player(i),90+IMaxBJ(action,0),target)
+            set mb_last_action[i] = IMaxBJ(action,0)
+            set mb_last_target[i] = target
+            set mb_last_valid[i] = mb_tick
+        endif
+        set i = i + 1
+    endloop
+    call DisplayTimedTextToPlayer(Player(mb_host),0,0,7,"[己方指挥] 已下达："+text+"。")
+    if action >= 0 then
+        call DisplayTimedTextToPlayer(Player(mb_host),0,0,7,"手动指挥持续生效；Esc → C 恢复自主/模型指挥。")
+    endif
+endfunction
+
+function MBQuickMenu takes nothing returns nothing
+    call DialogClear(mb_quick_dialog)
+    set mb_picking_target = false
+    call DialogSetMessage(mb_quick_dialog,"己方电脑快捷指挥")
+    set mb_quick_button[1] = DialogAddButton(mb_quick_dialog,"[F] 跟随我的英雄",70)
+    set mb_quick_button[2] = DialogAddButton(mb_quick_dialog,"[W] 原地等待信号",87)
+    set mb_quick_button[3] = DialogAddButton(mb_quick_dialog,"[A] 集中进攻…",65)
+    set mb_quick_button[4] = DialogAddButton(mb_quick_dialog,"[R] 撤回各自基地",82)
+    set mb_quick_button[0] = DialogAddButton(mb_quick_dialog,"[C] 恢复自主/模型指挥",67)
+    set mb_more_button = DialogAddButton(mb_quick_dialog,"[M] 更多原版指令",77)
+    call DialogAddButton(mb_quick_dialog,"[Esc] 关闭",27)
+    call DialogDisplay(Player(mb_host),mb_quick_dialog,true)
+endfunction
+
+function MBRaceName takes player p returns string
+    if GetPlayerRace(p) == RACE_HUMAN then
+        return "人族"
+    elseif GetPlayerRace(p) == RACE_ORC then
+        return "兽族"
+    elseif GetPlayerRace(p) == RACE_UNDEAD then
+        return "不死族"
+    elseif GetPlayerRace(p) == RACE_NIGHTELF then
+        return "暗夜精灵"
+    endif
+    return "未知种族"
+endfunction
+
+function MBQuickTargetMenu takes nothing returns nothing
+    local integer i = 0
+    local integer n = 0
+    call DialogClear(mb_quick_dialog)
+    set mb_picking_target = true
+    call DialogSetMessage(mb_quick_dialog,"选择集中进攻的敌人")
+    loop
+        exitwhen i >= 12
+        set mb_target_button[i] = null
+        if GetPlayerSlotState(Player(i)) == PLAYER_SLOT_STATE_PLAYING and IsPlayerEnemy(Player(i),Player(mb_host)) then
+            set n = n + 1
+            set mb_target_button[i] = DialogAddButton(mb_quick_dialog,"["+I2S(n)+"] "+GetPlayerName(Player(i))+"（"+MBRaceName(Player(i))+"）",48+n)
+        endif
+        set i = i + 1
+    endloop
+    call DialogAddButton(mb_quick_dialog,"[Esc] 取消",27)
+    call DialogDisplay(Player(mb_host),mb_quick_dialog,true)
+endfunction
+
+function MBQuickResponse takes nothing returns nothing
+    local button clicked = GetClickedButton()
+    local integer i = 0
+    local integer action = -2
+    local integer target = -1
+    if GetTriggerPlayer() != Player(mb_host) then
+        set clicked = null
+        return
+    endif
+    if mb_picking_target then
+        loop
+            exitwhen i >= 12
+            if clicked == mb_target_button[i] and mb_target_button[i] != null then
+                set action = 3
+                set target = i
+            endif
+            set i = i + 1
+        endloop
+        if action == 3 and GetPlayerSlotState(Player(target)) == PLAYER_SLOT_STATE_PLAYING and IsPlayerEnemy(Player(target),Player(mb_host)) then
+            call MBQuickOrder(action,target)
+        endif
+    elseif clicked == mb_more_button then
+        call MBQuickOrder(0,-1)
+        set mb_advanced = true
+        call DialogCommander()
+        set mb_advanced = false
+    else
+        loop
+            exitwhen i > 4
+            if clicked == mb_quick_button[i] then
+                set action = i
+            endif
+            set i = i + 1
+        endloop
+        if action == 3 then
+            call MBQuickTargetMenu()
+        elseif action == 0 then
+            call MBQuickOrder(-1,-1)
+        elseif action > 0 then
+            if action == 1 then
+                set target = mb_host
+            endif
+            call MBQuickOrder(action,target)
+        endif
+    endif
+    set clicked = null
+endfunction
+
+function MBChat takes nothing returns nothing
     if GetTriggerPlayer() == Player(mb_host) and SubString(GetEventPlayerChatString(),0,1) != "-" then
-        set mb_chat_seq = mb_chat_seq + 1
-        set mb_chat = MBSafe(GetEventPlayerChatString())
-        set mb_chat_history[ModuloInteger(mb_chat_seq,16)] = mb_chat
-        set mb_chat_numbers[ModuloInteger(mb_chat_seq,16)] = mb_chat_seq
+        call MBRecordChat(GetEventPlayerChatString())
         // Exact emergency commands work even while a model request is in flight.
         if mb_chat == "撤退" or mb_chat == "快撤" or mb_chat == "撤" then
-            loop
-                exitwhen i >= 12
-                if GetPlayerController(Player(i)) == MAP_CONTROL_COMPUTER and IsPlayerAlly(Player(i),Player(mb_host)) then
-                    call CommandAI(Player(i),94,-1)
-                    set mb_last_action[i] = 4
-                    set mb_last_target[i] = -1
-                endif
-                set i = i + 1
-            endloop
+            call MBQuickOrder(4,-1)
+        elseif mb_manual_action >= 0 then
+            call DisplayTimedTextToPlayer(Player(mb_host),0,0,5,"当前为手动指挥。要用聊天指挥模型，请先按 Esc → C。")
         endif
     endif
 endfunction
@@ -177,7 +313,9 @@ function MBReadOrder takes integer p returns nothing
         set mb_last_action[p] = action
         set mb_last_target[p] = target
     endif
-    call DisplayTimedTextToPlayer(Player(mb_host),0,0,5,"[Bridge] slot "+I2S(p+1)+" order accepted: "+I2S(action))
+    if IsPlayerAlly(Player(p),Player(mb_host)) then
+        call DisplayTimedTextToPlayer(Player(mb_host),0,0,5,"[模型指挥] 已向 "+GetPlayerName(Player(p))+" 下达："+MBActionName(action)+"。")
+    endif
     if say != "" then
         call DisplayTimedTextToPlayer(Player(mb_host),0,0,8,c2s(Player(p))+say)
     endif
@@ -192,13 +330,18 @@ function MBTick takes nothing returns nothing
     loop
         exitwhen i >= 12
         if GetPlayerSlotState(Player(i)) == PLAYER_SLOT_STATE_PLAYING and GetPlayerController(Player(i)) == MAP_CONTROL_COMPUTER then
-            call MBReadOrder(i)
+            if mb_manual_action >= 0 and IsPlayerAlly(Player(i),Player(mb_host)) then
+                call CommandAI(Player(i),96,0)
+            else
+                call MBReadOrder(i)
+            endif
         endif
         set i = i + 1
     endloop
     call PreloadGenClear()
     call PreloadGenStart()
     call Preload("H|"+I2S(mb_session)+"|"+I2S(mb_tick)+"|"+I2S(mb_chat_seq)+"|"+I2S(mb_host))
+    call Preload("Q|"+I2S(mb_manual_action)+"|"+I2S(mb_manual_target))
     set i = 0
     loop
         exitwhen i >= 16
@@ -246,6 +389,7 @@ function MBInit takes nothing returns nothing
     local integer humans = 0
     local trigger chat = CreateTrigger()
     local trigger death = CreateTrigger()
+    local trigger quick = null
     loop
         exitwhen i >= 12
         set mb_last_action[i] = -1
@@ -263,13 +407,18 @@ function MBInit takes nothing returns nothing
     endif
     set mb_session = GetRandomInt(100000,999999999)
     set mb_enabled = true
+    set mb_quick_dialog = DialogCreate()
+    set quick = CreateTrigger()
+    call TriggerRegisterDialogEvent(quick,mb_quick_dialog)
+    call TriggerAddAction(quick,function MBQuickResponse)
     call TriggerRegisterPlayerChatEvent(chat,Player(mb_host),"",false)
     call TriggerAddAction(chat,function MBChat)
     call TriggerRegisterAnyUnitEventBJ(death,EVENT_PLAYER_UNIT_DEATH)
     call TriggerAddAction(death,function MBDeath)
     set mb_timer = CreateTimer()
     call TimerStart(mb_timer,2.0,true,function MBTick)
-    call DisplayTimedTextToPlayer(Player(mb_host),0,0,20,"AMAI Model Bridge EXPERIMENTAL - single human only; start bridge on PC.")
+    call DisplayTimedTextToPlayer(Player(mb_host),0,0,20,"AMAI 中文模型实验版：请选择带指挥功能的模式；Esc 打开快捷指挥。模型模式另需启动电脑上的连接程序。")
     set chat = null
     set death = null
+    set quick = null
 endfunction

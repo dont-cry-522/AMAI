@@ -29,7 +29,7 @@ SYSTEM = '''你是魔兽争霸3单机对局的一队电脑指挥员。只返回�
 跟随且等信号：先follow并在plan中waiting=true，记录目标；靠近后可hold。只有真人下令才解除waiting。
 收到新指令应覆盖旧安排。没有新指令时继续有效的真人计划。己方根本无法支援时说明困难。模型不控制微操。
 敌方队伍自行决定配合，人数少/血量低时谨慎。不要在完全没有部队时盲目进攻。
-say可为空。每个电脑有给定性格；只根据观测和明确事件简短发言，不虚构杀人、拆矿或优势；允许温和游戏嘲讽，不要辱骂现实身份。不要每次都说话。
+say可为空；所有发言和plan.summary必须使用简体中文，不夹英文。每个电脑有给定性格；只根据观测和明确事件简短发言，不虚构杀人、拆矿或优势；允许温和游戏嘲讽，不要辱骂现实身份。不要每次都说话。
 回复只能表达意图，如“准备跟上”“收到，先等信号”，不能声称部队已到达或已完成。
 格式：{"orders":[{"player":1,"action":"follow","target":0,"say":"准备跟上。"}],"plan":{"leader":0,"target_enemy":2,"waiting":true,"summary":"跟随并等待进攻信号"}}。
 每次输出allowed_players的全部玩家。不要输出代码、路径、网址或其他字段。'''
@@ -51,11 +51,17 @@ def read_snapshot(path: Path) -> dict:
         raise ValueError('Snapshot footer mismatch')
     session, tick, chat_seq, host = header
     state = dict(session=session, tick=tick, chat_seq=chat_seq, host=host,
-                 players={}, observations={}, events={}, chat='',chat_history=[])
+                 players={}, observations={}, events={}, chat='',chat_history=[],manual_order=None)
     for line in lines[1:-1]:
         fields = line.split('|')
         if fields[0] == 'C':
             state['chat_history'].append(dict(sequence=int(fields[1]),text='|'.join(fields[2:])))
+        elif fields[0] == 'Q':
+            action,target = map(int,fields[1:])
+            if action not in range(-1,5) or target not in range(-1,12):
+                raise ValueError('Invalid local command')
+            if action >= 0:
+                state['manual_order'] = dict(action=action,target=target)
         elif fields[0] == 'P':
             p, control, allies, race, ack = map(int, fields[1:])
             state['players'][p] = dict(player=p, control=control, allies=allies, race=race, ack=ack)
@@ -164,7 +170,7 @@ def request_model(config, view, conversation):
         response_format={'type':'json_object'})
     if 'deepseek' in config['model'].lower():
         payload['thinking'] = {'type':'disabled'}
-    headers = {'Content-Type':'application/json','User-Agent':'War3-AMAI-Bridge/0.1',
+    headers = {'Content-Type':'application/json','User-Agent':'War3-AMAI-Bridge/0.2',
                'x-opencode-session':conversation}
     if config.get('api_key'):
         headers['Authorization'] = 'Bearer ' + config['api_key']
@@ -227,7 +233,7 @@ class Bridge:
         self.seq = max((p['ack'] for p in state['players'].values()),default=0)
         self.last_tick = -1
         self.conversation = str(uuid.uuid4())
-        print('Connected to game session',self.session,flush=True)
+        print('已连接游戏对局',self.session,flush=True)
 
     def step(self, state, now):
         if state['session'] != self.session:
@@ -237,6 +243,18 @@ class Bridge:
             self.last_tick = state['tick']
         if now - self.last_seen > 8:
             return
+        # Local menu orders win even if an earlier model call is still running.
+        # Clearing cached orders prevents them from resuming after manual release.
+        if state.get('manual_order') is not None:
+            for mask,players in teams(state).items():
+                if mask & (1 << state['host']):
+                    pending = self.pending.pop(mask,None)
+                    if pending:
+                        pending[0].cancel()
+                    self.memory.pop(mask,None)
+                    self.last_call.pop(mask,None)
+                    for p in players:
+                        self.orders.pop(p,None)
         for mask,(future,origin,view,submitted) in list(self.pending.items()):
             if not future.done():
                 continue
@@ -249,7 +267,7 @@ class Bridge:
             except Exception as e:
                 # Never log response bodies, headers, config, chat, or API keys.
                 message = str(e) if isinstance(e,RuntimeError) else type(e).__name__
-                print('Model call failed:',message,flush=True)
+                print('模型调用失败：',message,flush=True)
                 continue
             self.memory[mask] = dict(plan=answer['plan'],orders=answer['orders'],
                 instruction_sequence=state['chat_seq'] if human_team else -1)
@@ -261,9 +279,11 @@ class Bridge:
                     self.last_say[p] = now
                 self.orders[p] = dict(order=order,seq=self.seq,say=say,accepted=now,
                                      chat_seq=state['chat_seq'],mask=mask)
-            print('Validated team orders:',mask,[(o['player']+1,o['action']) for o in answer['orders']],flush=True)
+            print('已校验队伍命令：',mask,[(o['player']+1,o['action']) for o in answer['orders']],flush=True)
         for mask,players in teams(state).items():
             human_team = bool(mask & (1 << state['host']))
+            if human_team and state.get('manual_order') is not None:
+                continue
             previous_tick,previous_chat = self.last_call.get(mask,(-100,-1))
             new_chat = human_team and state['chat_seq'] != previous_chat
             if mask in self.pending or (not new_chat and state['tick']-previous_tick < 10):
@@ -360,14 +380,15 @@ def restore():
 
 def diagnose(config):
     folder=Path(config['game_dir'])/'AMAI_Bridge'
-    report={'prototype':'0.1','state_exists':(folder/'state.txt').exists(),
+    report={'prototype':'0.2','state_exists':(folder/'state.txt').exists(),
             'commands_present':[p.name for p in folder.glob('command*.txt')],
             'model':config['model'],'key_configured':bool(config.get('api_key'))}
     try:
         state=read_snapshot(folder/'state.txt')
         report.update(session=state['session'],tick=state['tick'],chat_sequence=state['chat_seq'],
             state_age_seconds=round(time.time()-(folder/'state.txt').stat().st_mtime,1),
-            acknowledgements={p:i['ack'] for p,i in state['players'].items()})
+            acknowledgements={p:i['ack'] for p,i in state['players'].items()},
+            local_order=state.get('manual_order'))
     except (OSError,ValueError) as e:
         report['state_error']=type(e).__name__
     atomic_write(ROOT/'diagnostics.json',json.dumps(report,ensure_ascii=False,indent=2))
@@ -388,7 +409,7 @@ def main():
     folder.mkdir(exist_ok=True)
     bridge=Bridge(folder,config,mock=args.mode=='mock')
     print('通信测试模式（不调用模型）' if bridge.mock else '模型模式：会向配置的服务发送游戏战况和己方聊天，并消耗服务额度。')
-    print('等待测试地图写入战况。关闭窗口即可停止外部控制。',flush=True)
+    print('等待测试地图写入战况。Esc 快捷指挥无需此窗口；手动指挥后按 Esc → C 恢复模型控制。',flush=True)
     last_warning=0
     try:
         while True:
@@ -403,7 +424,7 @@ def main():
                     last_warning=time.monotonic()
             time.sleep(0.5)
     except KeyboardInterrupt:
-        print('已停止。电脑将恢复 AMAI 自主行动。')
+        print('已停止模型控制。手动命令仍由地图保持；Esc → C 可交还 AMAI 自主行动。')
     finally:
         bridge.pool.shutdown(wait=False,cancel_futures=True)
 

@@ -5,7 +5,7 @@
     //-----------------------------------------------------------------------
 
     // default values
-    string language = ""  // Possible values: "" (dialog), "English", "Deutsch", "Swedish", "French", "Spanish", "Romanian", "Russian", "Portuguese", "Norwegian", "Chinese"
+    string language = "Chinese"  // Possible values: "" (dialog), "English", "Deutsch", "Swedish", "French", "Spanish", "Romanian", "Russian", "Portuguese", "Norwegian", "Chinese"
     string game_mode = "" // Possible values: "" (dialog), "commander", "no_human", "ai_only", "shared"
 
     integer array command_number
@@ -1609,6 +1609,12 @@ function DialogCommander takes nothing returns nothing
     set t = null
     return
   endif
+  if mb_enabled and GetTriggerPlayer() == Player(mb_host) and not mb_advanced then
+    call DestroyTrigger(t)
+    set t = null
+    call ExecuteFunc("MBQuickMenu")
+    return
+  endif
   set commanded_player[GetPlayerId(GetTriggerPlayer())] = null
   set start_dialog = BuildStartDialog(GetTriggerPlayer(), 0)
   call TriggerRegisterDialogEvent(t, start_dialog )
@@ -1997,7 +2003,7 @@ function LanguageDlg takes nothing returns nothing
   call DialogDisplay(Player(host), language_dialog, true)
 endfunction
 
-#INCLUDE <ModelBridge\map.eai>
+#INCLUDE <ModelBridge\map.eai> #ENC:utf8
 
 function InitCommander takes nothing returns nothing
   local timer t = CreateTimer()

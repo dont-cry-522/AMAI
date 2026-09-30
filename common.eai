@@ -478,7 +478,7 @@ globals
 	
 	boolean campaign_ai = false
 
-    string language = "English"
+    string language = "Chinese"
     
     string ai_id = ""
     

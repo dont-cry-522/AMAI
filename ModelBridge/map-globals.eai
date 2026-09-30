@@ -12,3 +12,12 @@
     integer array mb_last_valid
     string array mb_event
     timer mb_timer = null
+    // -1: model/autonomous control; 0: original Commander; 1..4: local order.
+    integer mb_manual_action = -1
+    integer mb_manual_target = -1
+    boolean mb_advanced = false
+    boolean mb_picking_target = false
+    dialog mb_quick_dialog = null
+    button array mb_quick_button
+    button array mb_target_button
+    button mb_more_button = null

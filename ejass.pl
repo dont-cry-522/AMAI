@@ -115,8 +115,9 @@ while (<INFILE>) {
 		delete $defs{$1} unless $skip;
 	}
 	elsif (not $skip) {
-		if (/#INCLUDE <([^>]*)>/) {
-			open(FILE, $1) or die "WARN: File <$1> not found!";
+		if (/#INCLUDE <([^>]*)>(?: #ENC:([^ \t\n\r]+))?/) {
+			my ($fn, $enc) = ($1, $2);
+			open(FILE, defined($enc) ? "<:encoding($enc)" : "<", $fn) or die "WARN: File <$fn> not found!";
 			my @include;
 			print (@include = <FILE>);
 			close(FILE);
