@@ -8,7 +8,7 @@ import re
 import threading
 import time
 
-from bridge import atomic_write, clean_say
+from bridge import atomic_write, clean_say, map_allows_voice
 
 
 class WindowsPushToTalk:
@@ -94,7 +94,7 @@ class VoiceInput:
 
     def active(self, session):
         state = self.state
-        return bool(state and state.get('version', 0) >= 4 and state['session'] == session
+        return bool(map_allows_voice(state) and state['session'] == session
                     and time.monotonic()-self.fresh_at < 4)
 
     def step(self, state, now):
@@ -102,7 +102,8 @@ class VoiceInput:
         if not old or (old['session'], old['tick']) != (state['session'], state['tick']):
             self.fresh_at = now
         self.state = state
-        if state.get('version', 0) < 4 or now-self.fresh_at >= 4:
+        if not map_allows_voice(state) or now-self.fresh_at >= 4:
+            self.pending = None
             return
         if not old or old['session'] != state['session']:
             self.pending = None
@@ -133,6 +134,8 @@ class VoiceInput:
             from vosk import Model, KaldiRecognizer, SetLogLevel
             SetLogLevel(-1)
             model = Model(str(self.root/'voice-model'))
+            if self.stop.is_set():
+                return
             keys = WindowsPushToTalk(self.game_dir)
             print('语音已准备：在新版测试地图内按住 F7 说话，松开提交。单次最多 15 秒。', flush=True)
             armed = False  # require a key-up before first capture, including after Alt-Tab

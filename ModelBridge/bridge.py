@@ -59,11 +59,15 @@ def read_snapshot(path: Path) -> dict:
     session, tick, chat_seq, host = header
     state = dict(session=session, tick=tick, chat_seq=chat_seq, host=host,
                  players={}, observations={}, events={}, chat='',chat_history=[],manual_order=None,
-                 version=0,voice_ack=0)
+                 version=0,voice_ack=0,mode=None)
     for line in lines[1:-1]:
         fields = line.split('|')
         if fields[0] == 'V':
             state['version'] = int(fields[1])
+        elif fields[0] == 'M':
+            if len(fields)!=2 or fields[1] not in ('llm','voice'):
+                raise ValueError('Invalid map mode')
+            state['mode'] = fields[1]
         elif fields[0] == 'I':
             state['voice_ack'] = int(fields[1])
         elif fields[0] == 'C':
@@ -84,6 +88,8 @@ def read_snapshot(path: Path) -> dict:
                 hero_xy=[hx,hy], gold=gold, wood=wood, food=food))
         elif fields[0] == 'E' and len(fields) == 5:
             state['events'][int(fields[1])] = dict(tick=int(fields[2]), kind=fields[3], owner=int(fields[4]))
+    if state['version'] >= 5 and state['mode'] is None:
+        raise ValueError('Missing map mode')
     if host not in state['players'] or len(state['players']) > 4:
         raise ValueError('Prototype requires one human and at most four active slots')
     if sum(p['control'] == 0 for p in state['players'].values()) != 1:
@@ -91,6 +97,12 @@ def read_snapshot(path: Path) -> dict:
     state['chat_history'].sort(key=lambda c:c['sequence'])
     state['chat']=state['chat_history'][-1]['text'] if state['chat_history'] else ''
     return state
+
+
+def map_allows_voice(state):
+    # v0.4 was voice-only; v0.5+ must explicitly opt in from the selected map.
+    return bool(state and ((state.get('version') == 4 and state.get('mode') is None)
+                          or (state.get('version',0) >= 5 and state.get('mode') == 'voice')))
 
 
 def teams(state):
@@ -195,7 +207,7 @@ def request_model(config, view, conversation):
         response_format={'type':'json_object'})
     if 'deepseek' in config['model'].lower():
         payload['thinking'] = {'type':'disabled'}
-    headers = {'Content-Type':'application/json','User-Agent':'War3-AMAI-Bridge/0.4',
+    headers = {'Content-Type':'application/json','User-Agent':'War3-AMAI-Bridge/0.5',
                'x-opencode-session':conversation}
     if config.get('api_key'):
         headers['Authorization'] = 'Bearer ' + config['api_key']
@@ -373,13 +385,15 @@ def install_game(game):
     """Install only packaged maps and local-file support; retain existing content."""
     if not game.is_dir() or not any((game/n).exists() for n in ('war3.exe','Warcraft III.exe','Frozen Throne.exe')):
         raise ValueError('找不到游戏程序，请选择包含 war3.exe 的文件夹')
-    sources=list((ROOT/'Maps').glob('*.w3x'))
+    sources=[(p,'AMAI_ModelBridge_Test') for p in (ROOT/'Maps').glob('*.w3x')]
+    for name in ('AMAI_DeepSeek','AMAI_DeepSeek_Voice'):
+        sources.extend((p,name) for p in (ROOT/'Maps'/name).glob('*.w3x'))
     if not sources:
         raise ValueError('缺少随包地图，请完整解压后再启动')
     (game/'AMAI_Bridge').mkdir(exist_ok=True)
-    maps = game/'Maps'/'AMAI_ModelBridge_Test'
-    maps.mkdir(parents=True,exist_ok=True)
-    for source in sources:
+    for source,category in sources:
+        maps = game/'Maps'/category
+        maps.mkdir(parents=True,exist_ok=True)
         dest = maps/source.name
         if dest.exists() and dest.read_bytes()!=source.read_bytes():
             suffix=hashlib.sha256(source.read_bytes()).hexdigest()[:10]
@@ -443,7 +457,7 @@ def restore():
 
 def diagnose(config):
     folder=Path(config['game_dir'])/'AMAI_Bridge'
-    report={'prototype':'0.4','state_exists':(folder/'state.txt').exists(),
+    report={'prototype':'0.5','state_exists':(folder/'state.txt').exists(),
             'voice_enabled':bool(config.get('voice_enabled',False)),
             'commands_present':[p.name for p in folder.glob('command*.txt')],
             'model':config['model'],'key_configured':bool(config.get('api_key'))}
@@ -452,7 +466,8 @@ def diagnose(config):
         report.update(session=state['session'],tick=state['tick'],chat_sequence=state['chat_seq'],
             state_age_seconds=round(time.time()-(folder/'state.txt').stat().st_mtime,1),
             acknowledgements={p:i['ack'] for p,i in state['players'].items()},
-            local_order=state.get('manual_order'))
+            local_order=state.get('manual_order'),map_mode=state.get('mode'),
+            map_allows_voice=map_allows_voice(state))
     except (OSError,ValueError) as e:
         report['state_error']=type(e).__name__
     atomic_write(ROOT/'diagnostics.json',json.dumps(report,ensure_ascii=False,indent=2))
@@ -476,10 +491,7 @@ def run_bridge(config, mock=False):
         raise ValueError('该游戏的连接程序已经在运行，请保留原窗口。') from None
     bridge=Bridge(folder,config,mock=mock)
     voice=None
-    if config.get('voice_enabled',False) and not mock:
-        from voice import VoiceInput
-        voice=VoiceInput(ROOT,folder,config['game_dir'])
-        voice.start()
+    last_mode=None
     print('通信测试模式（不调用模型）' if bridge.mock else '模型模式：会向配置的服务发送游戏战况和己方聊天，并消耗服务额度。')
     print('等待测试地图写入战况。Esc 快捷指挥无需此窗口；手动指挥后按 Esc → C 恢复模型控制。',flush=True)
     last_warning=0
@@ -489,6 +501,18 @@ def run_bridge(config, mock=False):
                 path=folder/'state.txt'
                 if time.time()-path.stat().st_mtime <= 8:
                     state=read_snapshot(path)
+                    allow_voice=config.get('voice_enabled',False) and not mock and map_allows_voice(state)
+                    if voice and not allow_voice:
+                        voice.stop.set()
+                        voice=None
+                    if allow_voice and voice is None:
+                        from voice import VoiceInput
+                        voice=VoiceInput(ROOT,folder,config['game_dir'])
+                        voice.start()
+                    mode=(state['session'],state.get('mode'))
+                    if mode != last_mode:
+                        print('当前地图：DeepSeek + 语音。等待语音准备完成。' if allow_voice else '当前地图：DeepSeek 指挥，语音关闭。',flush=True)
+                        last_mode=mode
                     if voice:
                         voice.step(state,time.monotonic())
                     bridge.step(state,time.monotonic())

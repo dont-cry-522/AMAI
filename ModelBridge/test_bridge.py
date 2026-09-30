@@ -8,11 +8,11 @@ import threading
 from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from bridge import Bridge, read_snapshot, team_view, validate_response, request_model, render_command
+from bridge import Bridge, read_snapshot, team_view, validate_response, request_model, render_command, map_allows_voice
 
 
-def fixture(path, chat_seq=1, tick=1, session=123456, manual=(-1,-1)):
-    lines=[f'H|{session}|{tick}|{chat_seq}|0','V|4','I|0',f'C|{chat_seq}|跟着我，等信号一起打不死族',
+def fixture(path, chat_seq=1, tick=1, session=123456, manual=(-1,-1), mode='voice'):
+    lines=[f'H|{session}|{tick}|{chat_seq}|0','V|5',f'M|{mode}','I|0',f'C|{chat_seq}|跟着我，等信号一起打不死族',
            f'Q|{manual[0]}|{manual[1]}','P|0|0|3|1|0','P|1|1|3|2|0','P|2|1|12|3|0','P|3|1|12|4|0']
     for viewer in (1,2,3):
         mask=3 if viewer==1 else 12
@@ -35,6 +35,15 @@ def run():
         folder=Path(d)
         state=fixture(folder/'state.txt')
         ally=team_view(state,3,{})
+        ordinary=fixture(folder/'state.txt',mode='llm')
+        assert team_view(ordinary,3,{}) == ally  # identical tactical inputs and model behavior
+        assert map_allows_voice(state) and not map_allows_voice(ordinary)
+        for bad in ('M|invalid',''):
+            content=(folder/'state.txt').read_text(encoding='utf-8')
+            (folder/'invalid.txt').write_text(content.replace('M|llm',bad),encoding='utf-8')
+            try: read_snapshot(folder/'invalid.txt')
+            except ValueError: pass
+            else: raise AssertionError('Invalid/missing v0.5 map mode accepted')
         enemy=team_view(state,12,{})
         assert enemy['instruction'] is None and enemy['allowed_players']==[2,3]
         assert set(enemy['observations'])=={2,3} and '跟着我' not in json.dumps(enemy,ensure_ascii=False)
@@ -90,7 +99,7 @@ def run():
             result=request_model(dict(endpoint=f'http://127.0.0.1:{server.server_port}/chat/completions',model='test'),ally,'test-session')
         finally:
             server.shutdown();server.server_close();thread.join()
-        assert result['orders'][0]['action']=='follow' and captured['ua']=='War3-AMAI-Bridge/0.4'
+        assert result['orders'][0]['action']=='follow' and captured['ua']=='War3-AMAI-Bridge/0.5'
         assert captured['body']['model']=='test'
         assert '必须使用简体中文' in captured['body']['messages'][0]['content']
         # Structured data must stay inside fixed string arguments, including hostile text.
@@ -191,7 +200,8 @@ if __name__=='__main__':
         # The compiler can parse double-encoded strings without reporting an error.
         for text in ('string language = "Chinese"','[R] 撤回各自基地',
                      '跟随目标英雄','mb_chat == "撤退"','call Preload("Q|"',
-                     'call Preload("V|4")','call MBReadVoice()','仅英雄跟随'):
+                     'call Preload("V|5")','call Preload("M|llm")','call Preload("M|voice")',
+                     'if mb_voice_enabled then','call MBReadVoice()','仅英雄跟随'):
             assert text in script, 'Compiled TFT text missing or incorrectly encoded: '+text
         assert b'string language = "Chinese"' in (args.compiled/'common.ai').read_bytes()
         assert b'function MBAIHeroStep' in (args.compiled/'common.ai').read_bytes()

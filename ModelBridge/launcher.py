@@ -126,7 +126,8 @@ def main():
     bridge.install_game(game)
     config['game_dir']=str(game)
     bridge.atomic_write(bridge.CONFIG,json.dumps(config,ensure_ascii=False,indent=2))
-    print('配置完成。进入单人自定义游戏，选择 AMAI_ModelBridge_Test 文件夹里的海龟岛。',flush=True)
+    print('配置完成。进入单人自定义游戏，选 AMAI_DeepSeek（普通版）或 AMAI_DeepSeek_Voice（语音版）里的海龟岛。',flush=True)
+    print('两版使用相同的 DeepSeek 指挥；语音版开局后准备 F7 说话，无需切换连接程序。',flush=True)
     print('一个真人加三个电脑，分成 2 对 2，选择指挥模式。保持本窗口开启。',flush=True)
     # Do not start another copy of the game when it is already open.
     running=subprocess.run(['tasklist.exe','/FO','CSV','/NH'],capture_output=True,

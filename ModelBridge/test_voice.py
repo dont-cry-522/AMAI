@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+from unittest.mock import patch
 
 from voice import VoiceInput, capture, recognized_text, render_voice
 
@@ -68,6 +69,22 @@ def run():
         before=(Path(tmp)/'voice.txt').read_bytes()
         voice.step({**current,'session':11,'tick':1},110)
         assert before==(Path(tmp)/'voice.txt').read_bytes()  # paused/exited game
+        # A normal map must neither publish queued speech nor open the microphone.
+        ordinary=dict(session=12,tick=1,version=5,mode='llm',voice_ack=0)
+        voice.queue.put((12,'不能发送的语音',111))
+        voice.step(ordinary,111)
+        with patch('voice.time.monotonic',return_value=111):
+            assert not voice.active(12)
+            keys.down=True;keys.focused=True
+            count=len(opened)
+            assert capture(keys,lambda:voice.active(12),stop,Stream,Recognizer())==''
+            assert len(opened)==count
+        assert before==(Path(tmp)/'voice.txt').read_bytes()
+        new_voice=dict(session=13,tick=1,version=5,mode='voice',voice_ack=0)
+        voice.queue.put((13,'新的语音局',112))
+        voice.step(new_voice,112)
+        assert '新的语音局' in (Path(tmp)/'voice.txt').read_text(encoding='utf-8')
+        assert '不能发送的语音' not in (Path(tmp)/'voice.txt').read_text(encoding='utf-8')
     print('PASS: push-to-talk focus/key gating, cancellation, overflow, time limit, Chinese text, fixed transport, acknowledgements, old maps/sessions and expiry')
 
 

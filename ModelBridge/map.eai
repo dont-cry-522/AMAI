@@ -365,7 +365,9 @@ function MBTick takes nothing returns nothing
     local integer mask = 0
     local integer bit = 1
     set mb_tick = mb_tick + 1
-    call MBReadVoice()
+    if mb_voice_enabled then
+        call MBReadVoice()
+    endif
     loop
         exitwhen i >= 12
         if GetPlayerSlotState(Player(i)) == PLAYER_SLOT_STATE_PLAYING and GetPlayerController(Player(i)) == MAP_CONTROL_COMPUTER then
@@ -380,7 +382,12 @@ function MBTick takes nothing returns nothing
     call PreloadGenClear()
     call PreloadGenStart()
     call Preload("H|"+I2S(mb_session)+"|"+I2S(mb_tick)+"|"+I2S(mb_chat_seq)+"|"+I2S(mb_host))
-    call Preload("V|4")
+    call Preload("V|5")
+    if mb_voice_enabled then
+        call Preload("M|voice")
+    else
+        call Preload("M|llm")
+    endif
     call Preload("I|"+I2S(mb_voice_seq))
     call Preload("Q|"+I2S(mb_manual_action)+"|"+I2S(mb_manual_target))
     set i = 0
@@ -459,7 +466,11 @@ function MBInit takes nothing returns nothing
     set mb_timer = CreateTimer()
     call TimerStart(mb_timer,2.0,true,function MBTick)
     call DisplayTimedTextToPlayer(Player(mb_host),0,0,20,"AMAI 中文模型实验版：请选择带指挥功能的模式；Esc 打开快捷指挥。模型模式另需启动电脑上的连接程序。")
-    call DisplayTimedTextToPlayer(Player(mb_host),0,0,20,"语音版：按住 F7 说话，松开提交；中文回复显示在屏幕上。说“撤退”直接撤回，说“恢复指挥”解除手动锁定。")
+    if mb_voice_enabled then
+        call DisplayTimedTextToPlayer(Player(mb_host),0,0,20,"AMAI + DeepSeek 语音版：按住 F7 说话，松开提交；回复为中文文字。说“撤退”直接撤回，说“恢复指挥”解除手动锁定。")
+    else
+        call DisplayTimedTextToPlayer(Player(mb_host),0,0,20,"AMAI + DeepSeek 普通版：电脑自主配合，也可打字或 Esc 指挥；此地图不开启语音。请保持连接程序运行。")
+    endif
     set chat = null
     set death = null
     set quick = null

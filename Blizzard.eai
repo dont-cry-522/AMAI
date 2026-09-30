@@ -1,4 +1,9 @@
 #INCLUDE <$VER$\tmp\Blizzard1.j>
+#IFDEF MB_NO_VOICE
+    boolean mb_voice_enabled = false
+#ELSE
+    boolean mb_voice_enabled = true
+#ENDIF
     #INCLUDE <ModelBridge\map-globals.eai>
     //-----------------------------------------------------------------------
     // Commander globals
