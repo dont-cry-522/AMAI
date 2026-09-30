@@ -5,6 +5,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## Unreleased
 
+### Experimental fork feature
+
+- Added an opt-in single-human TFT model bridge prototype: visible-state export, versioned file commands, follow/hold/attack/retreat tasks and expiring external control. Requires the local bridge program; in-game compatibility and tactical performance remain unverified.
+
 ### Changed
 
 - Rebalanced Reforged Undead strategy counter ratings. (Powerer)

@@ -1,4 +1,5 @@
 #INCLUDE <$VER$\tmp\Blizzard1.j>
+    #INCLUDE <ModelBridge\map-globals.eai>
     //-----------------------------------------------------------------------
     // Commander globals
     //-----------------------------------------------------------------------
@@ -1996,6 +1997,8 @@ function LanguageDlg takes nothing returns nothing
   call DialogDisplay(Player(host), language_dialog, true)
 endfunction
 
+#INCLUDE <ModelBridge\map.eai>
+
 function InitCommander takes nothing returns nothing
   local timer t = CreateTimer()
   set last_timer = t
@@ -2039,4 +2042,5 @@ endfunction
     call InitHCL()
     call InitCommander()
     call InitZoom()
+    call MBInit()
 #INCLUDE <$VER$\tmp\Blizzard6.j>

@@ -1,0 +1,275 @@
+// Experimental TFT single-human file transport. Never load model-generated code.
+function MBField takes string s, integer wanted returns string
+    local integer i = 0
+    local integer start = 0
+    local integer field = 0
+    loop
+        exitwhen i > StringLength(s)
+        if i == StringLength(s) or SubString(s, i, i+1) == "|" then
+            if field == wanted then
+                return SubString(s, start, i)
+            endif
+            set field = field + 1
+            set start = i + 1
+        endif
+        set i = i + 1
+    endloop
+    return ""
+endfunction
+
+function MBSafe takes string s returns string
+    local integer i = 0
+    local string c
+    local string result = ""
+    loop
+        exitwhen i >= StringLength(s)
+        set c = SubString(s, i, i+1)
+        if c == "\"" or c == "\\" or c == "|" or c == "\n" or c == "\r" then
+            set c = " "
+        endif
+        set result = result + c
+        set i = i + 1
+    endloop
+    return result
+endfunction
+
+function MBChat takes nothing returns nothing
+    local integer i = 0
+    if GetTriggerPlayer() == Player(mb_host) and SubString(GetEventPlayerChatString(),0,1) != "-" then
+        set mb_chat_seq = mb_chat_seq + 1
+        set mb_chat = MBSafe(GetEventPlayerChatString())
+        set mb_chat_history[ModuloInteger(mb_chat_seq,16)] = mb_chat
+        set mb_chat_numbers[ModuloInteger(mb_chat_seq,16)] = mb_chat_seq
+        // Exact emergency commands work even while a model request is in flight.
+        if mb_chat == "撤退" or mb_chat == "快撤" or mb_chat == "撤" then
+            loop
+                exitwhen i >= 12
+                if GetPlayerController(Player(i)) == MAP_CONTROL_COMPUTER and IsPlayerAlly(Player(i),Player(mb_host)) then
+                    call CommandAI(Player(i),94,-1)
+                    set mb_last_action[i] = 4
+                    set mb_last_target[i] = -1
+                endif
+                set i = i + 1
+            endloop
+        endif
+    endif
+endfunction
+
+function MBDeath takes nothing returns nothing
+    local unit u = GetTriggerUnit()
+    local integer v = 0
+    local string kind = "unit"
+    if IsUnitType(u, UNIT_TYPE_HERO) then
+        set kind = "hero"
+    elseif IsUnitType(u, UNIT_TYPE_STRUCTURE) then
+        set kind = "building"
+    endif
+    loop
+        exitwhen v >= 12
+        if IsUnitVisible(u, Player(v)) or IsPlayerAlly(GetOwningPlayer(u),Player(v)) then
+            set mb_event[v] = I2S(mb_tick)+"|"+kind+"|"+I2S(GetPlayerId(GetOwningPlayer(u)))
+        endif
+        set v = v + 1
+    endloop
+    set u = null
+endfunction
+
+function MBObserve takes integer viewer, integer owner returns nothing
+    local group g = CreateGroup()
+    local unit u
+    local integer count = 0
+    local integer heroes = 0
+    local integer buildings = 0
+    local real x = 0
+    local real y = 0
+    local real hp = 0
+    local real maxhp = 0
+    local real hx = 0
+    local real hy = 0
+    local integer gold = -1
+    local integer wood = -1
+    local integer food = -1
+    call GroupEnumUnitsOfPlayer(g,Player(owner),null)
+    loop
+        set u = FirstOfGroup(g)
+        exitwhen u == null
+        call GroupRemoveUnit(g,u)
+        if GetWidgetLife(u) > 0.405 and not IsUnitHidden(u) and (IsPlayerAlly(Player(owner),Player(viewer)) or (IsUnitVisible(u,Player(viewer)) and not IsUnitInvisible(u,Player(viewer)))) then
+            if IsUnitType(u,UNIT_TYPE_STRUCTURE) then
+                set buildings = buildings + 1
+            elseif not IsUnitType(u,UNIT_TYPE_PEON) then
+                set count = count + 1
+                set x = x + GetUnitX(u)
+                set y = y + GetUnitY(u)
+                set hp = hp + GetWidgetLife(u)
+                set maxhp = maxhp + GetUnitState(u,UNIT_STATE_MAX_LIFE)
+                if IsUnitType(u,UNIT_TYPE_HERO) then
+                    set heroes = heroes + 1
+                    set hx = GetUnitX(u)
+                    set hy = GetUnitY(u)
+                endif
+            endif
+        endif
+    endloop
+    if count > 0 then
+        set x = x / count
+        set y = y / count
+        set hp = hp / maxhp * 100
+    endif
+    if IsPlayerAlly(Player(owner),Player(viewer)) then
+        set gold = GetPlayerState(Player(owner),PLAYER_STATE_RESOURCE_GOLD)
+        set wood = GetPlayerState(Player(owner),PLAYER_STATE_RESOURCE_LUMBER)
+        set food = GetPlayerState(Player(owner),PLAYER_STATE_RESOURCE_FOOD_USED)
+    endif
+    call Preload("R|"+I2S(viewer)+"|"+I2S(owner)+"|"+I2S(count)+"|"+I2S(heroes)+"|"+I2S(buildings)+"|"+I2S(R2I(hp))+"|"+I2S(R2I(x))+"|"+I2S(R2I(y))+"|"+I2S(R2I(hx))+"|"+I2S(R2I(hy))+"|"+I2S(gold)+"|"+I2S(wood)+"|"+I2S(food))
+    call DestroyGroup(g)
+    set g = null
+    set u = null
+endfunction
+
+function MBReadOrder takes integer p returns nothing
+    local string name12 = GetPlayerName(Player(12))
+    local string name13 = GetPlayerName(Player(13))
+    local string data
+    local string say
+    local integer stamp
+    local integer seq
+    local integer action
+    local integer target
+    call SetPlayerName(Player(12), "")
+    call SetPlayerName(Player(13), "")
+    call Preloader("AMAI_Bridge\\command"+I2S(p)+".txt")
+    set data = GetPlayerName(Player(12))
+    set say = GetPlayerName(Player(13))
+    call SetPlayerName(Player(12), name12)
+    call SetPlayerName(Player(13), name13)
+    set stamp = S2I(MBField(data,1))
+    set seq = S2I(MBField(data,3))
+    set action = S2I(MBField(data,4))
+    set target = S2I(MBField(data,5))
+    if MBField(data,0) != I2S(mb_session) or stamp > mb_tick or mb_tick-stamp > 5 then
+        return
+    endif
+    // A new human instruction invalidates in-flight decisions for their allies.
+    if IsPlayerAlly(Player(p),Player(mb_host)) and S2I(MBField(data,2)) != mb_chat_seq then
+        return
+    endif
+    if action < 0 or action > 4 then
+        return
+    endif
+    if action == 1 and (target < 0 or target >= 12 or not IsPlayerAlly(Player(p),Player(target))) then
+        return
+    endif
+    if action == 3 and (target < 0 or target >= 12 or not IsPlayerEnemy(Player(target),Player(p)) or GetPlayerSlotState(Player(target)) != PLAYER_SLOT_STATE_PLAYING) then
+        return
+    endif
+    if mb_tick-mb_last_valid[p] > 5 then
+        set mb_last_action[p] = -1
+    endif
+    set mb_last_valid[p] = mb_tick
+    call CommandAI(Player(p),96,0)
+    if seq <= mb_order_seq[p] then
+        return
+    endif
+    set mb_order_seq[p] = seq
+    if action != mb_last_action[p] or target != mb_last_target[p] then
+        call CommandAI(Player(p),90+action,target)
+        set mb_last_action[p] = action
+        set mb_last_target[p] = target
+    endif
+    call DisplayTimedTextToPlayer(Player(mb_host),0,0,5,"[Bridge] slot "+I2S(p+1)+" order accepted: "+I2S(action))
+    if say != "" then
+        call DisplayTimedTextToPlayer(Player(mb_host),0,0,8,c2s(Player(p))+say)
+    endif
+endfunction
+
+function MBTick takes nothing returns nothing
+    local integer i = 0
+    local integer j = 0
+    local integer mask = 0
+    local integer bit = 1
+    set mb_tick = mb_tick + 1
+    loop
+        exitwhen i >= 12
+        if GetPlayerSlotState(Player(i)) == PLAYER_SLOT_STATE_PLAYING and GetPlayerController(Player(i)) == MAP_CONTROL_COMPUTER then
+            call MBReadOrder(i)
+        endif
+        set i = i + 1
+    endloop
+    call PreloadGenClear()
+    call PreloadGenStart()
+    call Preload("H|"+I2S(mb_session)+"|"+I2S(mb_tick)+"|"+I2S(mb_chat_seq)+"|"+I2S(mb_host))
+    set i = 0
+    loop
+        exitwhen i >= 16
+        if mb_chat_numbers[i] > 0 then
+            call Preload("C|"+I2S(mb_chat_numbers[i])+"|"+mb_chat_history[i])
+        endif
+        set i = i + 1
+    endloop
+    set i = 0
+    loop
+        exitwhen i >= 12
+        if GetPlayerSlotState(Player(i)) == PLAYER_SLOT_STATE_PLAYING then
+            set j = 0
+            set mask = 0
+            set bit = 1
+            loop
+                exitwhen j >= 12
+                if IsPlayerAlly(Player(i),Player(j)) then
+                    set mask = mask + bit
+                endif
+                set bit = bit * 2
+                set j = j + 1
+            endloop
+            call Preload("P|"+I2S(i)+"|"+I2S(GetHandleId(GetPlayerController(Player(i))))+"|"+I2S(mask)+"|"+I2S(GetHandleId(GetPlayerRace(Player(i))))+"|"+I2S(mb_order_seq[i]))
+        endif
+        if GetPlayerSlotState(Player(i)) == PLAYER_SLOT_STATE_PLAYING and GetPlayerController(Player(i)) == MAP_CONTROL_COMPUTER then
+            set j = 0
+            loop
+                exitwhen j >= 12
+                if GetPlayerSlotState(Player(j)) == PLAYER_SLOT_STATE_PLAYING then
+                    call MBObserve(i,j)
+                endif
+                set j = j + 1
+            endloop
+            call Preload("E|"+I2S(i)+"|"+mb_event[i])
+        endif
+        set i = i + 1
+    endloop
+    call Preload("Z|"+I2S(mb_session)+"|"+I2S(mb_tick))
+    call PreloadGenEnd("AMAI_Bridge\\state.txt")
+endfunction
+
+function MBInit takes nothing returns nothing
+    local integer i = 0
+    local integer humans = 0
+    local trigger chat = CreateTrigger()
+    local trigger death = CreateTrigger()
+    loop
+        exitwhen i >= 12
+        set mb_last_action[i] = -1
+        set mb_last_target[i] = -1
+        if GetPlayerSlotState(Player(i)) == PLAYER_SLOT_STATE_PLAYING and GetPlayerController(Player(i)) == MAP_CONTROL_USER then
+            set humans = humans + 1
+            set mb_host = i
+        endif
+        set i = i + 1
+    endloop
+    if humans != 1 then
+        call DestroyTrigger(chat)
+        call DestroyTrigger(death)
+        return
+    endif
+    set mb_session = GetRandomInt(100000,999999999)
+    set mb_enabled = true
+    call TriggerRegisterPlayerChatEvent(chat,Player(mb_host),"",false)
+    call TriggerAddAction(chat,function MBChat)
+    call TriggerRegisterAnyUnitEventBJ(death,EVENT_PLAYER_UNIT_DEATH)
+    call TriggerAddAction(death,function MBDeath)
+    set mb_timer = CreateTimer()
+    call TimerStart(mb_timer,2.0,true,function MBTick)
+    call DisplayTimedTextToPlayer(Player(mb_host),0,0,20,"AMAI Model Bridge EXPERIMENTAL - single human only; start bridge on PC.")
+    set chat = null
+    set death = null
+endfunction

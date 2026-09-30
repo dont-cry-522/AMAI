@@ -1,0 +1,14 @@
+    boolean mb_enabled = false
+    integer mb_host = -1
+    integer mb_session = 0
+    integer mb_tick = 0
+    integer mb_chat_seq = 0
+    string mb_chat = ""
+    string array mb_chat_history
+    integer array mb_chat_numbers
+    integer array mb_order_seq
+    integer array mb_last_action
+    integer array mb_last_target
+    integer array mb_last_valid
+    string array mb_event
+    timer mb_timer = null

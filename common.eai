@@ -9,6 +9,11 @@
 #INCLUDE <Natives.j>
 
 globals
+    integer mbai_mode = 0
+    integer mbai_target = 0
+    real mbai_deadline = 0
+    real mbai_x = 0
+    real mbai_y = 0
 
    //============================================================================
    // Standard Constants and Variables
@@ -8871,7 +8876,30 @@ function cmd_loop takes nothing returns nothing
     call PopLastCommand()
     call Trace("Receiving command" )
 
-    if cmd < 10 then
+    if cmd >= 90 and cmd <= 96 then
+      set mbai_deadline = TimerGetElapsed(tq_timer) + 30
+      if cmd != 96 then
+        call cmd_cancel(2,0)
+        set attack_unit = false
+        set target_unit = null
+        set break_attack = true
+        set go_home = false
+        set mbai_mode = cmd - 90
+        set mbai_target = data
+        if major_hero != null then
+          set mbai_x = GetUnitX(major_hero)
+          set mbai_y = GetUnitY(major_hero)
+        else
+          set mbai_x = GetLocationX(home_location)
+          set mbai_y = GetLocationY(home_location)
+        endif
+        if cmd == 93 then
+          call cmd_attack(12,data)
+        elseif cmd == 94 then
+          call cmd_attack(10,0)
+        endif
+      endif
+    elseif cmd < 10 then
       call cmd_cancel(cmd, data)
 
     elseif cmd < 20 then
@@ -12764,6 +12792,7 @@ function CommonSleepUntilTargetDeadAM takes unit target, boolean iscreeping, boo
   set lastcaptainy = GetUnitY(target)
 
   loop
+    exitwhen mbai_mode != 0 and TimerGetElapsed(tq_timer) > mbai_deadline
     //call Trace("SleepExitThreat:" + B2S(town_threat_break and town_threatened and not desperation_assault))
     exitwhen town_threat_break and town_threatened and not desperation_assault
     //call Trace("SleepExitBreak:" + B2S(break_attack and not desperation_assault))
@@ -13933,6 +13962,48 @@ endfunction
 //============================================================================
 // AMAI SingleMeleeAttack
 //============================================================================
+function MBAIStep takes nothing returns boolean
+  local group g = null
+  local unit u = null
+  if mbai_mode == 0 then
+    return false
+  endif
+  if TimerGetElapsed(tq_timer) > mbai_deadline then
+    set mbai_mode = 0
+    call cmd_cancel(2,0)
+    set go_home = false
+    return false
+  endif
+  if mbai_mode == 3 or town_threatened then
+    return false
+  endif
+  if mbai_mode == 1 then
+    set g = CreateGroup()
+    call GroupEnumUnitsOfPlayer(g,Player(mbai_target),null)
+    loop
+      set u = FirstOfGroup(g)
+      exitwhen u == null
+      call GroupRemoveUnit(g,u)
+      if IsUnitType(u,UNIT_TYPE_HERO) and UnitAlive(u) and not IsUnitHidden(u) then
+        set mbai_x = GetUnitX(u)
+        set mbai_y = GetUnitY(u)
+        exitwhen true
+      endif
+    endloop
+    call DestroyGroup(g)
+  elseif mbai_mode == 4 then
+    set mbai_x = GetLocationX(home_location)
+    set mbai_y = GetLocationY(home_location)
+  endif
+  set break_attack = false
+  call FormGroupAM(0)
+  call CaptainAttack(mbai_x,mbai_y)
+  call Sleep(2)
+  set g = null
+  set u = null
+  return true
+endfunction
+
 function SingleMeleeAttackAM takes boolean needs_exp, boolean has_siege, integer ai_strength returns nothing
   local unit hall = null
   local unit mega = null
@@ -13940,6 +14011,10 @@ function SingleMeleeAttackAM takes boolean needs_exp, boolean has_siege, integer
   local unit common = null
 
 //call Trace("SingleMeleeAttack")
+
+  if MBAIStep() then
+    return
+  endif
 
   if desperation_assault and not no_attack then
     // Perpetual attack regardless of power or strength
