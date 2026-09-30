@@ -78,7 +78,7 @@ def run():
             result=request_model(dict(endpoint=f'http://127.0.0.1:{server.server_port}/chat/completions',model='test'),ally,'test-session')
         finally:
             server.shutdown();server.server_close();thread.join()
-        assert result['orders'][0]['action']=='follow' and captured['ua']=='War3-AMAI-Bridge/0.2'
+        assert result['orders'][0]['action']=='follow' and captured['ua']=='War3-AMAI-Bridge/0.3'
         assert captured['body']['model']=='test'
         assert '必须使用简体中文' in captured['body']['messages'][0]['content']
         # Structured data must stay inside fixed string arguments, including hostile text.

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import getpass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -170,7 +171,7 @@ def request_model(config, view, conversation):
         response_format={'type':'json_object'})
     if 'deepseek' in config['model'].lower():
         payload['thinking'] = {'type':'disabled'}
-    headers = {'Content-Type':'application/json','User-Agent':'War3-AMAI-Bridge/0.2',
+    headers = {'Content-Type':'application/json','User-Agent':'War3-AMAI-Bridge/0.3',
                'x-opencode-session':conversation}
     if config.get('api_key'):
         headers['Authorization'] = 'Bearer ' + config['api_key']
@@ -327,23 +328,32 @@ def mock_response(view):
     return validate_response(dict(orders=orders,plan={}),view)
 
 
-def setup():
-    print('AMAI 模型桥接实验版：只在家里的游戏电脑上配置。')
-    game = Path(input('魔兽文件夹完整路径：').strip().strip('"')).resolve()
+def install_game(game):
+    """Install only packaged maps and local-file support; retain existing content."""
     if not game.is_dir() or not any((game/n).exists() for n in ('war3.exe','Warcraft III.exe','Frozen Throne.exe')):
         raise ValueError('找不到游戏程序，请选择包含 war3.exe 的文件夹')
+    sources=list((ROOT/'Maps').glob('*.w3x'))
+    if not sources:
+        raise ValueError('缺少随包地图，请完整解压后再启动')
     (game/'AMAI_Bridge').mkdir(exist_ok=True)
     maps = game/'Maps'/'AMAI_ModelBridge_Test'
     maps.mkdir(parents=True,exist_ok=True)
-    for source in (ROOT/'Maps').glob('*.w3x'):
+    for source in sources:
         dest = maps/source.name
         if dest.exists() and dest.read_bytes()!=source.read_bytes():
-            raise ValueError('测试地图已存在且内容不同，请先自行备份或改名：'+str(dest))
-        shutil.copyfile(source,dest)
-    print('将启用 Warcraft III 的本地文件读取，仅用于此文件桥。可用 restore 命令恢复原值。')
+            suffix=hashlib.sha256(source.read_bytes()).hexdigest()[:10]
+            dest=maps/f'{source.stem}_{suffix}{source.suffix}'
+        if not dest.exists():
+            shutil.copyfile(source,dest)
+        elif dest.read_bytes()!=source.read_bytes():
+            raise ValueError('地图副本冲突，原文件已保留：'+str(dest))
     import winreg
     registry = r'Software\Blizzard Entertainment\Warcraft III'
-    backup = ROOT/'registry-backup.local.json'
+    # Keep one original value beside the game, even across launcher upgrades.
+    backup = game/'AMAI_Bridge'/'registry-backup.local.json'
+    legacy = ROOT/'registry-backup.local.json'
+    if not backup.exists() and legacy.exists():
+        shutil.copyfile(legacy,backup)
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER,registry) as key:
         try:
             value,kind=winreg.QueryValueEx(key,'Allow Local Files')
@@ -353,10 +363,17 @@ def setup():
         if not backup.exists():
             atomic_write(backup,json.dumps(before))
         winreg.SetValueEx(key,'Allow Local Files',0,winreg.REG_DWORD,1)
-    print('默认预填 OpenCode Go / DeepSeek V4.1 Flash；Go 官方要求编程代理用途，游戏用途请先向服务方确认。')
-    endpoint = input('接口地址（回车使用预填值；也可填写通用 API 地址）：').strip() or DEFAULT_ENDPOINT
-    model = input('模型名称（回车使用 deepseek-v4.1-flash）：').strip() or DEFAULT_MODEL
-    api_key = getpass.getpass('API Key（仅保存到本机；回车跳过，先做通信测试）：').strip()
+    print('测试地图和本地通信已准备好。',flush=True)
+
+
+def setup():
+    print('AMAI 模型桥接实验版：只在家里的游戏电脑上配置。')
+    existing=json.loads(CONFIG.read_text(encoding='utf-8')) if CONFIG.exists() else {}
+    game = Path(input('魔兽文件夹完整路径：').strip().strip('"') or existing.get('game_dir','')).resolve()
+    install_game(game)
+    endpoint = input('接口地址（回车保留现有值）：').strip() or existing.get('endpoint',DEFAULT_ENDPOINT)
+    model = input('模型名称（回车保留现有值）：').strip() or existing.get('model',DEFAULT_MODEL)
+    api_key = getpass.getpass('API Key（回车保留已配密钥）：').strip() or existing.get('api_key','')
     atomic_write(CONFIG,json.dumps(dict(game_dir=str(game),endpoint=endpoint,model=model,api_key=api_key),ensure_ascii=False,indent=2))
     print('配置已保存。本目录 config.local.json 含密钥，请勿分享。请重新启动魔兽。')
 
@@ -364,6 +381,11 @@ def setup():
 def restore():
     import winreg
     backup = ROOT/'registry-backup.local.json'
+    if CONFIG.exists():
+        game=json.loads(CONFIG.read_text(encoding='utf-8')).get('game_dir','')
+        shared=Path(game)/'AMAI_Bridge'/'registry-backup.local.json'
+        if game and shared.exists():
+            backup=shared
     if not backup.exists():
         print('没有本程序保存的注册表备份。'); return
     before=json.loads(backup.read_text())
@@ -380,7 +402,7 @@ def restore():
 
 def diagnose(config):
     folder=Path(config['game_dir'])/'AMAI_Bridge'
-    report={'prototype':'0.2','state_exists':(folder/'state.txt').exists(),
+    report={'prototype':'0.3','state_exists':(folder/'state.txt').exists(),
             'commands_present':[p.name for p in folder.glob('command*.txt')],
             'model':config['model'],'key_configured':bool(config.get('api_key'))}
     try:
@@ -395,19 +417,22 @@ def diagnose(config):
     print('已生成 diagnostics.json：不含密钥、聊天内容或游戏路径。')
 
 
-def main():
-    parser=argparse.ArgumentParser()
-    parser.add_argument('mode',choices=['setup','run','mock','restore','diagnose'])
-    args=parser.parse_args()
-    if args.mode=='setup': setup(); return
-    if args.mode=='restore': restore(); return
-    config=json.loads(CONFIG.read_text(encoding='utf-8'))
-    if args.mode=='diagnose': diagnose(config); return
-    if args.mode=='run' and not config.get('api_key') and urllib.parse.urlsplit(config['endpoint']).scheme=='https':
+def run_bridge(config, mock=False):
+    if not mock and not config.get('api_key') and urllib.parse.urlsplit(config['endpoint']).scheme=='https':
         raise ValueError('尚未填写模型密钥，请先配置；也可以先运行通信测试')
     folder=Path(config['game_dir'])/'AMAI_Bridge'
     folder.mkdir(exist_ok=True)
-    bridge=Bridge(folder,config,mock=args.mode=='mock')
+    import msvcrt
+    lock=(folder/'bridge.lock').open('a+b')
+    try:
+        if lock.seek(0,2)==0:
+            lock.write(b'0'); lock.flush()
+        lock.seek(0)
+        msvcrt.locking(lock.fileno(),msvcrt.LK_NBLCK,1)
+    except OSError:
+        lock.close()
+        raise ValueError('该游戏的连接程序已经在运行，请保留原窗口。') from None
+    bridge=Bridge(folder,config,mock=mock)
     print('通信测试模式（不调用模型）' if bridge.mock else '模型模式：会向配置的服务发送游戏战况和己方聊天，并消耗服务额度。')
     print('等待测试地图写入战况。Esc 快捷指挥无需此窗口；手动指挥后按 Esc → C 恢复模型控制。',flush=True)
     last_warning=0
@@ -427,6 +452,18 @@ def main():
         print('已停止模型控制。手动命令仍由地图保持；Esc → C 可交还 AMAI 自主行动。')
     finally:
         bridge.pool.shutdown(wait=False,cancel_futures=True)
+        lock.close()
+
+
+def main():
+    parser=argparse.ArgumentParser()
+    parser.add_argument('mode',choices=['setup','run','mock','restore','diagnose'])
+    args=parser.parse_args()
+    if args.mode=='setup': setup(); return
+    if args.mode=='restore': restore(); return
+    config=json.loads(CONFIG.read_text(encoding='utf-8'))
+    if args.mode=='diagnose': diagnose(config); return
+    run_bridge(config,mock=args.mode=='mock')
 
 
 if __name__=='__main__':

@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ### Experimental fork feature
 
+- Added a portable one-click launcher that uses a private local configuration, discovers classic Warcraft installations, installs an independent test map, enables reversible local-file support and starts the game/bridge. Existing maps and saved credentials are retained; a file picker handles missing or ambiguous game paths. Private credentials are excluded from source control.
 - Defaulted AI/Commander language to Chinese and requested Simplified Chinese model dialogue. Added a native Esc quick-command menu (follow, wait, select enemy, retreat, release, original Commander). Local orders suspend allied model control until explicitly released; enemy orders remain independent. Game verification is still pending.
 - Added an explicit encoding option to script includes so Chinese bridge labels and emergency-command comparisons compile as UTF-8 instead of being double encoded.
 - Added an opt-in single-human TFT model bridge prototype: visible-state export, versioned file commands, follow/hold/attack/retreat tasks and expiring external control. Requires the local bridge program; in-game compatibility and tactical performance remain unverified.
