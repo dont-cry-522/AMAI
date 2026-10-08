@@ -8,7 +8,7 @@ import threading
 from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from bridge import Bridge, read_snapshot, team_view, validate_response, request_model, render_command, map_allows_voice
+from bridge import Bridge, read_snapshot, team_view, validate_response, request_model, render_command, map_allows_voice, coordinate_orders
 
 
 def fixture(path, chat_seq=1, tick=1, session=123456, manual=(-1,-1), mode='voice'):
@@ -48,6 +48,29 @@ def run():
         assert enemy['instruction'] is None and enemy['allowed_players']==[2,3]
         assert set(enemy['observations'])=={2,3} and '跟着我' not in json.dumps(enemy,ensure_ascii=False)
         assert all(o['gold']==-1 for obs in enemy['observations'].values() for o in obs if o['player'] in (0,1))
+        silent=team_view(state,3,{},autonomous=True)
+        assert silent['instruction'] is None and '跟着我' not in json.dumps(silent,ensure_ascii=False)
+        team_answer=validate_response(answer(silent,'attack',2),silent)
+        assert coordinate_orders(silent,team_answer)['orders'][0]['action']=='auto'
+        for row in silent['observations'][1]:
+            if row['player'] in (0,1): row['combat_units']=8
+            if row['player']==2: row.update(combat_units=5,army_xy=[100,200])
+        assert coordinate_orders(silent,team_answer)['orders'][0]['action']=='attack'
+        silent['observations'][1][1]['army_xy']=[3000,3000]
+        assert coordinate_orders(silent,team_answer)['orders'][0]['action']=='follow'
+        silent['observations'][1][1]['hp_percent']=25
+        assert coordinate_orders(silent,team_answer)['orders'][0]['action']=='retreat'
+        enemy_answer=validate_response(dict(orders=[dict(player=p,action='attack',target=p-2,say='嘴硬') for p in (2,3)],plan={}),enemy)
+        for p in (2,3):
+            for row in enemy['observations'][p]:
+                if row['player'] in (2,3): row['combat_units']=8
+        separated=coordinate_orders(enemy,enemy_answer)['orders']
+        assert {o['action'] for o in separated}=={'attack'}
+        assert len({o['target'] for o in separated})==1 and all(o['say']=='' for o in separated)
+        enemy['observations'][3][3]['army_xy']=[5000,5000]
+        enemy['observations'][2][3]['army_xy']=[5000,5000]
+        rally=coordinate_orders(enemy,enemy_answer)['orders']
+        assert {o['action'] for o in rally}=={'hold','follow'}
         good=validate_response(answer(ally),ally)
         waiting=team_view(state,3,dict(plan=good['plan'],orders=good['orders'],instruction_sequence=1))
         autonomous_attack=answer(waiting,action='attack',target=2)
@@ -97,11 +120,15 @@ def run():
         thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
         try:
             result=request_model(dict(endpoint=f'http://127.0.0.1:{server.server_port}/chat/completions',model='test'),ally,'test-session')
+            ordinary_prompt=captured['body']['messages'][0]['content']
+            request_model(dict(endpoint=f'http://127.0.0.1:{server.server_port}/chat/completions',model='test',autonomous_only=True),silent,'test-session')
+            assert '不要聊天' in captured['body']['messages'][0]['content']
+            assert '跟着我' not in captured['body']['messages'][1]['content']
         finally:
             server.shutdown();server.server_close();thread.join()
         assert result['orders'][0]['action']=='follow' and captured['ua']=='War3-AMAI-Bridge/0.5'
         assert captured['body']['model']=='test'
-        assert '必须使用简体中文' in captured['body']['messages'][0]['content']
+        assert '必须使用简体中文' in ordinary_prompt
         # Structured data must stay inside fixed string arguments, including hostile text.
         hostile='\");\ncall ExecuteFunc(\"bad\")\n//\\|cffff0000'
         script=render_command(state,good['orders'][0],5,hostile)

@@ -23,6 +23,9 @@ def run():
             target=package/'Maps'/name/'sample.w3x'
             target.parent.mkdir()
             target.write_bytes(name.encode())
+        solo=package/'Maps'/'双人协同电脑'/'single.w3x'
+        solo.parent.mkdir()
+        solo.write_bytes(b'autonomous map')
         game=root/'Games'/'Warcraft III'; game.mkdir(parents=True)
         for name in ('war3.exe','Game.dll','war3.mpq'):
             (game/name).write_bytes(b'fixture, never executed')
@@ -51,6 +54,9 @@ def run():
             assert len(copies)==1 and copies[0].read_bytes()==source.read_bytes()
             for name in ('AMAI_DeepSeek','AMAI_DeepSeek_Voice'):
                 assert (game/'Maps'/name/'sample.w3x').read_bytes()==name.encode()
+            bridge.install_game(game,autonomous=True)
+            assert (game/'Maps'/'双人协同电脑'/'single.w3x').read_bytes()==b'autonomous map'
+            assert len(list((game/'Maps'/'双人协同电脑').glob('*.w3x')))==1
             backup=game/'AMAI_Bridge'/'registry-backup.local.json'
             assert json.loads(backup.read_text())=={'existed':False}
             bridge.install_game(game)

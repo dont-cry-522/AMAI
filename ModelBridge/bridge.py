@@ -41,6 +41,14 @@ say可为空；所有发言和plan.summary必须使用简体中文，不夹英�
 格式：{"intent":"command","release_waiting":false,"orders":[{"player":1,"action":"follow","target":0,"say":"准备跟上。"}],"plan":{"leader":0,"target_enemy":2,"waiting":true,"summary":"跟随并等待进攻信号"}}。
 每次输出allowed_players的全部玩家。不要输出代码、路径、网址或其他字段。'''
 
+AUTONOMOUS_SYSTEM = '''你是魔兽争霸3经典版 2v2 电脑的战术顾问。只返回JSON对象。
+只控制allowed_players，观测仅含己方视野；单位数不等于精确战力。
+队友应先发育、靠拢，再共同进攻；不要单独冲锋，也不要在盟友仍能支援时无故撤退。
+敌方两个电脑也应集结，优先攻击同一目标。基地受威胁或部队严重残血时可撤退。
+可选动作：auto、follow、hold、attack、retreat、keep。follow目标必须是盟友编号，attack目标必须是敌人编号，其余目标为-1。
+每个allowed_players各给一个命令。不要聊天，say必须为空字符串。不要使用hero_动作。
+格式：{"orders":[{"player":1,"action":"follow","target":0,"say":""}],"plan":{"leader":0,"target_enemy":2,"waiting":false,"summary":""}}。'''
+
 
 def atomic_write(path: Path, text: str):
     temp = path.with_suffix(path.suffix + '.tmp')
@@ -113,7 +121,7 @@ def teams(state):
     return result
 
 
-def team_view(state, mask, memory):
+def team_view(state, mask, memory, autonomous=False):
     allowed = teams(state)[mask]
     allies = [p for p in state['players'] if mask & (1 << p)]
     is_human_team = state['host'] in allies
@@ -123,8 +131,68 @@ def team_view(state, mask, memory):
         personalities={p:PERSONALITIES[p % len(PERSONALITIES)] for p in allowed},
         observations={p:state['observations'].get(p,[]) for p in allowed},
         events={p:e for p,e in state['events'].items() if p in allowed and state['tick']-e['tick'] <= 20},
-        instruction=dict(sequence=state['chat_seq'],text=state['chat'],history=state['chat_history']) if is_human_team else None,
+        instruction=dict(sequence=state['chat_seq'],text=state['chat'],history=state['chat_history']) if is_human_team and not autonomous else None,
         capabilities=dict(heroes_only=state.get('version',0)>=4),memory=memory)
+
+
+def coordinate_orders(view, answer):
+    """Keep model strategy, but require both armies to be able to join a 2v2 fight."""
+    players = view['allowed_players']
+    observed = view['observations']
+    own = {p: next((o for o in observed.get(p,[]) if o['player'] == p),None) for p in players}
+    result = {o['player']:dict(o,say='') for o in answer['orders']}
+    enemies = [p['player'] for p in view['players'] if p['player'] not in view['allies']]
+    preferred = answer['plan']['target_enemy']
+    if preferred not in enemies:
+        preferred = next((o['target'] for o in result.values() if o['action'] == 'attack' and o['target'] in enemies),enemies[0])
+
+    def distance(a,b):
+        return ((a[0]-b[0])**2+(a[1]-b[1])**2)**0.5
+
+    humans = [p for p in view['allies'] if p not in players]
+    if humans:
+        leader = humans[0]
+        for p in players:
+            me = own[p]
+            friend = next((o for o in observed.get(p,[]) if o['player'] == leader),None)
+            order = result[p]
+            if not me or me['combat_units'] < 6:
+                action,target = 'auto',-1
+            elif me['hp_percent'] < 35:
+                action,target = 'retreat',-1
+            elif not friend or friend['heroes'] == 0:
+                action,target = 'auto',-1
+            else:
+                action,target = 'follow',leader
+                close = distance(me['army_xy'],friend['army_xy']) <= 1800
+                enemy_near = any(o['player'] in enemies and o['combat_units'] > 0
+                    and distance(o['army_xy'],friend['army_xy']) <= 1800
+                    for o in observed.get(p,[]))
+                if (order['action'] == 'attack' and friend['combat_units'] >= 5
+                        and close and enemy_near):
+                    action,target = 'attack',preferred
+                elif order['action'] == 'hold' and friend['combat_units'] < 4:
+                    action,target = 'hold',-1
+            result[p].update(action=action,target=target)
+    elif len(players) == 2:
+        leader = max(players,key=lambda p:(own[p] or {}).get('combat_units',0))
+        wing = next(p for p in players if p != leader)
+        first,second = own[leader],own[wing]
+        ready = first and second and min(first['combat_units'],second['combat_units']) >= 6
+        together = ready and distance(first['army_xy'],second['army_xy']) <= 1800
+        if not ready:
+            for p in players:
+                result[p].update(action='auto',target=-1)
+        elif min(first['hp_percent'],second['hp_percent']) < 35:
+            for p in players:
+                result[p].update(action='retreat',target=-1)
+        elif not together:
+            result[leader].update(action='hold',target=-1)
+            result[wing].update(action='follow',target=leader)
+        else:
+            for p in players:
+                result[p].update(action='attack',target=preferred)
+    return {**answer,'orders':[result[p] for p in players]}
 
 
 def clean_say(text):
@@ -202,7 +270,7 @@ def request_model(config, view, conversation):
         raise ValueError('Use HTTPS, or a loopback endpoint for local models')
     if url.username or url.password or url.query or url.fragment:
         raise ValueError('Credentials and query strings are not allowed in endpoint URLs')
-    payload = dict(model=config['model'],messages=[{'role':'system','content':SYSTEM},
+    payload = dict(model=config['model'],messages=[{'role':'system','content':AUTONOMOUS_SYSTEM if config.get('autonomous_only') else SYSTEM},
         {'role':'user','content':json.dumps(view,ensure_ascii=False)}],max_tokens=1200,
         response_format={'type':'json_object'})
     if 'deepseek' in config['model'].lower():
@@ -320,13 +388,15 @@ class Bridge:
                 message = str(e) if isinstance(e,RuntimeError) else type(e).__name__
                 print('模型调用失败：',message,flush=True)
                 continue
+            if self.config.get('autonomous_only'):
+                answer = coordinate_orders(view,answer)
             direct_reply = human_team and state['chat_seq'] > 0 and self.memory.get(mask,{}).get('instruction_sequence') != state['chat_seq']
             self.memory[mask] = dict(plan=answer['plan'],orders=answer['orders'],
                 instruction_sequence=state['chat_seq'] if human_team else -1)
             for order in answer['orders']:
                 self.seq += 1
                 p = order['player']
-                say = order['say'] if direct_reply or now-self.last_say.get(p,-1000) >= 30 else ''
+                say = '' if self.config.get('autonomous_only') else order['say'] if direct_reply or now-self.last_say.get(p,-1000) >= 30 else ''
                 if say:
                     self.last_say[p] = now
                 self.orders[p] = dict(order=order,seq=self.seq,say=say,accepted=now,
@@ -342,7 +412,7 @@ class Bridge:
                 continue
             if not self.mock and len(self.pending)+sum(not f.done() for f in self.retired) >= 3:
                 continue
-            view = team_view(state,mask,self.memory.get(mask,{}))
+            view = team_view(state,mask,self.memory.get(mask,{}),self.config.get('autonomous_only',False))
             self.last_call[mask] = (state['tick'],state['chat_seq'])
             if self.mock:
                 answer = mock_response(view)
@@ -381,13 +451,16 @@ def mock_response(view):
     return validate_response(dict(orders=orders,plan={}),view)
 
 
-def install_game(game):
+def install_game(game, autonomous=False):
     """Install only packaged maps and local-file support; retain existing content."""
     if not game.is_dir() or not any((game/n).exists() for n in ('war3.exe','Warcraft III.exe','Frozen Throne.exe')):
         raise ValueError('找不到游戏程序，请选择包含 war3.exe 的文件夹')
-    sources=[(p,'AMAI_ModelBridge_Test') for p in (ROOT/'Maps').glob('*.w3x')]
-    for name in ('AMAI_DeepSeek','AMAI_DeepSeek_Voice'):
-        sources.extend((p,name) for p in (ROOT/'Maps'/name).glob('*.w3x'))
+    if autonomous:
+        sources=[(p,'双人协同电脑') for p in (ROOT/'Maps'/'双人协同电脑').glob('*.w3x')]
+    else:
+        sources=[(p,'AMAI_ModelBridge_Test') for p in (ROOT/'Maps').glob('*.w3x')]
+        for name in ('AMAI_DeepSeek','AMAI_DeepSeek_Voice'):
+            sources.extend((p,name) for p in (ROOT/'Maps'/name).glob('*.w3x'))
     if not sources:
         raise ValueError('缺少随包地图，请完整解压后再启动')
     (game/'AMAI_Bridge').mkdir(exist_ok=True)
@@ -425,7 +498,7 @@ def setup():
     print('AMAI 模型桥接实验版：只在家里的游戏电脑上配置。')
     existing=json.loads(CONFIG.read_text(encoding='utf-8')) if CONFIG.exists() else {}
     game = Path(input('魔兽文件夹完整路径：').strip().strip('"') or existing.get('game_dir','')).resolve()
-    install_game(game)
+    install_game(game,existing.get('autonomous_only',False))
     endpoint = input('接口地址（回车保留现有值）：').strip() or existing.get('endpoint',DEFAULT_ENDPOINT)
     model = input('模型名称（回车保留现有值）：').strip() or existing.get('model',DEFAULT_MODEL)
     api_key = getpass.getpass('API Key（回车保留已配密钥）：').strip() or existing.get('api_key','')
@@ -492,8 +565,11 @@ def run_bridge(config, mock=False):
     bridge=Bridge(folder,config,mock=mock)
     voice=None
     last_mode=None
-    print('通信测试模式（不调用模型）' if bridge.mock else '模型模式：会向配置的服务发送游戏战况和己方聊天，并消耗服务额度。')
-    print('等待测试地图写入战况。Esc 快捷指挥无需此窗口；手动指挥后按 Esc → C 恢复模型控制。',flush=True)
+    print('通信测试模式（不调用模型）' if bridge.mock else
+          '双人协同模式：会向配置的服务发送游戏战况，并消耗服务额度。' if config.get('autonomous_only') else
+          '模型模式：会向配置的服务发送游戏战况和己方聊天，并消耗服务额度。')
+    print('等待测试地图写入战况。' if config.get('autonomous_only') else
+          '等待测试地图写入战况。Esc 快捷指挥无需此窗口；手动指挥后按 Esc → C 恢复模型控制。',flush=True)
     last_warning=0
     try:
         while True:
@@ -501,7 +577,7 @@ def run_bridge(config, mock=False):
                 path=folder/'state.txt'
                 if time.time()-path.stat().st_mtime <= 8:
                     state=read_snapshot(path)
-                    allow_voice=config.get('voice_enabled',False) and not mock and map_allows_voice(state)
+                    allow_voice=config.get('voice_enabled',False) and not config.get('autonomous_only') and not mock and map_allows_voice(state)
                     if voice and not allow_voice:
                         voice.stop.set()
                         voice=None
