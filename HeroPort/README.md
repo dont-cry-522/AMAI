@@ -15,14 +15,6 @@ Blizzard assets, private configuration and generated maps are not committed here
   scripts. Refuses existing outputs and inputs with custom object tables.
 - `validate_imports.py`: validates the actual extracted models, textures, sounds,
   custom object data and resource references. Run both bundled JASS parsers too.
-- `add_to_maps.py`: scans existing maps for Tavern creation, merges the prepared
-  hero objects/imports without discarding map-specific records, and writes new
-  maps into a separate directory. Original map names and AI modes are preserved.
-  Both JASS parsers and byte comparisons run for every output. ID/resource
-  conflicts are rejected. Source maps and the prepared resource template are
-  read-only. Work/extracted files stay outside the delivery directory.
-- `python -m unittest discover -s HeroPort -p test_add_to_maps.py` checks object
-  preservation, collision rejection and script initialization order.
 
 ## Compatibility limits — not an exact official implementation
 

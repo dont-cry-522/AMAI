@@ -301,11 +301,6 @@ endfunction
 function FP_Collect takes nothing returns nothing
     local unit u = GetEnumUnit()
     local integer id = GetHandleId(u)
-    // Scenario maps may create their neutral taverns after the initial timer.
-    if GetUnitTypeId(u) == 'ntav' and GetOwningPlayer(u) == Player(PLAYER_NEUTRAL_PASSIVE) and FP_clock >= 135.0 and not LoadBoolean(FP_data, id, 40) then
-        call AddUnitToStock(u, 'Npal', 1, 1)
-        call SaveBoolean(FP_data, id, 40, true)
-    endif
     if FP_Alive(u) and not IsUnitType(u, UNIT_TYPE_STRUCTURE) and GetUnitTypeId(u) != 'fPdm' then
         call GroupAddUnit(FP_units, u)
         call SaveInteger(FP_data, id, 12, 0)
@@ -397,7 +392,6 @@ function FP_Stock takes nothing returns nothing
     local unit u = GetEnumUnit()
     if GetUnitTypeId(u) == 'ntav' then
         call AddUnitToStock(u, 'Npal', 1, 1)
-        call SaveBoolean(FP_data, GetHandleId(u), 40, true)
     endif
     set u = null
 endfunction
