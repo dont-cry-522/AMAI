@@ -127,7 +127,8 @@ def main():
     config['game_dir']=str(game)
     bridge.atomic_write(bridge.CONFIG,json.dumps(config,ensure_ascii=False,indent=2))
     if config.get('autonomous_only'):
-        print('配置完成。单人自定义游戏中选“双人协同电脑”里的海龟岛。',flush=True)
+        print('配置完成。地图已分为 AMAI、AMAI_DeepSeek 和 AMAI_酒馆；原版两个目录保留。',flush=True)
+        print('体验新版电脑请选 AMAI_DeepSeek 里的“双人协同_海龟岛_v06”。',flush=True)
         print('一个真人加三个电脑，分成 2 对 2，选择指挥模式。无需聊天或语音；保持本窗口开启。',flush=True)
     else:
         print('配置完成。进入单人自定义游戏，选 AMAI_DeepSeek（普通版）或 AMAI_DeepSeek_Voice（语音版）里的海龟岛。',flush=True)

@@ -456,7 +456,16 @@ def install_game(game, autonomous=False):
     if not game.is_dir() or not any((game/n).exists() for n in ('war3.exe','Warcraft III.exe','Frozen Throne.exe')):
         raise ValueError('找不到游戏程序，请选择包含 war3.exe 的文件夹')
     if autonomous:
-        sources=[(p,'双人协同电脑') for p in (ROOT/'Maps'/'双人协同电脑').glob('*.w3x')]
+        sources=[]
+        for name in ('AMAI','AMAI_酒馆'):
+            maps=list((ROOT/'Maps'/name).glob('*.w3x'))
+            if not maps:
+                raise ValueError('地图包不完整，缺少 '+name+' 地图')
+            sources.extend((p,name) for p in maps)
+        deepseek=ROOT/'Maps'/'AMAI_DeepSeek'/'双人协同_海龟岛_v06.w3x'
+        if not deepseek.is_file():
+            raise ValueError('地图包不完整，缺少 AMAI_DeepSeek 地图')
+        sources.append((deepseek,'AMAI_DeepSeek'))
     else:
         sources=[(p,'AMAI_ModelBridge_Test') for p in (ROOT/'Maps').glob('*.w3x')]
         for name in ('AMAI_DeepSeek','AMAI_DeepSeek_Voice'):

@@ -23,8 +23,11 @@ def run():
             target=package/'Maps'/name/'sample.w3x'
             target.parent.mkdir()
             target.write_bytes(name.encode())
-        solo=package/'Maps'/'双人协同电脑'/'single.w3x'
-        solo.parent.mkdir()
+        for name in ('AMAI','AMAI_酒馆'):
+            folder=package/'Maps'/name
+            folder.mkdir()
+            (folder/'sample.w3x').write_bytes(name.encode())
+        solo=package/'Maps'/'AMAI_DeepSeek'/'双人协同_海龟岛_v06.w3x'
         solo.write_bytes(b'autonomous map')
         game=root/'Games'/'Warcraft III'; game.mkdir(parents=True)
         for name in ('war3.exe','Game.dll','war3.mpq'):
@@ -55,8 +58,10 @@ def run():
             for name in ('AMAI_DeepSeek','AMAI_DeepSeek_Voice'):
                 assert (game/'Maps'/name/'sample.w3x').read_bytes()==name.encode()
             bridge.install_game(game,autonomous=True)
-            assert (game/'Maps'/'双人协同电脑'/'single.w3x').read_bytes()==b'autonomous map'
-            assert len(list((game/'Maps'/'双人协同电脑').glob('*.w3x')))==1
+            assert (game/'Maps'/'AMAI_DeepSeek'/solo.name).read_bytes()==b'autonomous map'
+            assert len(list((game/'Maps'/'AMAI_DeepSeek').glob('*.w3x')))==2  # prior legacy map retained
+            assert (game/'Maps'/'AMAI'/'sample.w3x').read_bytes()==b'AMAI'
+            assert (game/'Maps'/'AMAI_酒馆'/'sample.w3x').read_bytes()=='AMAI_酒馆'.encode()
             backup=game/'AMAI_Bridge'/'registry-backup.local.json'
             assert json.loads(backup.read_text())=={'existed':False}
             bridge.install_game(game)
