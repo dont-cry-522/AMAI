@@ -18,7 +18,7 @@ def allow_hero_charm(original):
     old = object_tables(original, extended=True)
     assert b'ANch' not in {raw for table in old for raw, _ in table}
     changes = mods({'arut':'测试版：蛊惑可以选择敌方英雄；保留对高等级中立生物的限制。'})
-    changes += mods({'atar':'air,ground,enemy,neutral,hero,nonhero,organic',
+    changes += mods({'atar':'air,ground,enemy,neutral,hero,nonhero',
                      'aub1':'永久控制目标敌方单位，包括英雄。对高等级中立生物的原有限制仍适用。'}, 1)
     added = object_file([('ANch', '\0'*4, changes)], extended=True)
     edit = object_tables(added, extended=True)[1][0][1]
